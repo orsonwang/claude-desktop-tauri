@@ -17,6 +17,7 @@ This project wraps the official claude.ai website in a WebView, providing native
 - **Extensions Support** - Install and manage Claude Desktop Extensions
 - **Extension Runtime** - Automatically start MCP servers from installed Extensions
 - **User Config Placeholders** - Support for `${user_config.*}` in Extension manifests
+- **MCP Connection Reuse** - Optimized connection management to reduce timeout errors
 
 ### Screenshots
 
@@ -30,24 +31,33 @@ The application displays MCP servers in the Connectors menu, just like the offic
 
 - Linux (tested on Ubuntu/Debian with Wayland)
 - Rust 1.70+
-- Node.js 18+
-- pnpm
+- tauri-cli 2.0+
 
 ### Installation
 
+#### From Release
+
+Download the latest release from [GitHub Releases](https://github.com/orsonwang/claude-desktop-tauri/releases):
+
+- `.deb` - For Debian/Ubuntu
+- `.rpm` - For Fedora/RHEL
+- `.AppImage` - Universal Linux
+
+#### Build from Source
+
 ```bash
 # Clone the repository
-git clone https://github.com/anthropics/claude-desktop-tauri.git
+git clone https://github.com/orsonwang/claude-desktop-tauri.git
 cd claude-desktop-tauri
 
-# Install dependencies
-pnpm install
+# Install tauri-cli
+cargo install tauri-cli --version "^2.0"
 
 # Run in development mode
-pnpm tauri dev
+cargo tauri dev
 
 # Build for production
-pnpm tauri build
+cargo tauri build
 ```
 
 ### MCP Server Configuration
@@ -79,6 +89,7 @@ This application simulates the official Claude Desktop's Electron environment:
 1. **API Injection** - Injects `claudeAppBindings` and `claude.settings` APIs via Tauri's `js_init_script`
 2. **MCP Communication** - Uses `window.postMessage()` with MessagePort to communicate with MCP servers
 3. **Extension Runtime** - Automatically loads and starts MCP servers from installed Extensions
+4. **Connection Reuse** - Reuses MCP connections within 2 minutes to reduce timeout errors
 
 ### Architecture
 
@@ -88,12 +99,41 @@ src-tauri/
     lib.rs            # Tauri main entry, plugin initialization
     desktop_api.rs    # Claude Desktop API simulation (js_init_script injection)
     mcp/              # MCP module
+      mod.rs          # Module exports
+      config.rs       # Config file read/write
       client.rs       # MCP Client, subprocess management
       manager.rs      # MCP Server manager
       commands.rs     # Tauri commands for MCP API
+      proxy.rs        # HTTP Proxy (fallback)
     extensions/       # Extensions module
       mod.rs          # Extension install/list/delete/enable
+dist/
+  index.html          # Required placeholder file for Tauri
 ```
+
+### Build Output
+
+```
+src-tauri/target/release/bundle/
+├── deb/Claude Desktop_x.x.x_amd64.deb     # Debian/Ubuntu
+├── rpm/Claude Desktop-x.x.x-1.x86_64.rpm  # Fedora/RHEL
+└── appimage/Claude Desktop_x.x.x_amd64.AppImage  # Universal
+```
+
+### Cross-Platform Support
+
+- **Linux**: Fully supported (primary development platform)
+- **Windows/macOS**: Code is compatible, requires building on respective platforms (Tauri does not support cross-compilation)
+
+### Version History
+
+#### v0.1.1 (2025-11-26)
+- Optimized MCP connection reuse mechanism to reduce timeout errors
+- Added deb package maintainer info
+- Removed pnpm dependency, using cargo tauri directly
+
+#### v0.1.0 (2025-11-26)
+- Initial release
 
 ### License
 
@@ -119,6 +159,7 @@ Linux/Wayland 原生 Claude Desktop 應用程式，使用 Tauri 2.0 建置。
 - **Extensions 支援** - 安裝和管理 Claude Desktop 擴充功能
 - **Extension Runtime** - 自動從已安裝的 Extensions 啟動 MCP 伺服器
 - **用戶設定佔位符** - 支援 Extension manifest 中的 `${user_config.*}`
+- **MCP 連線重用** - 優化連線管理，減少 timeout 錯誤
 
 ### 螢幕截圖
 
@@ -132,24 +173,33 @@ Linux/Wayland 原生 Claude Desktop 應用程式，使用 Tauri 2.0 建置。
 
 - Linux（在 Ubuntu/Debian + Wayland 上測試）
 - Rust 1.70+
-- Node.js 18+
-- pnpm
+- tauri-cli 2.0+
 
 ### 安裝方式
 
+#### 從 Release 下載
+
+從 [GitHub Releases](https://github.com/orsonwang/claude-desktop-tauri/releases) 下載最新版本：
+
+- `.deb` - Debian/Ubuntu 適用
+- `.rpm` - Fedora/RHEL 適用
+- `.AppImage` - 通用 Linux
+
+#### 從原始碼建置
+
 ```bash
 # 複製儲存庫
-git clone https://github.com/anthropics/claude-desktop-tauri.git
+git clone https://github.com/orsonwang/claude-desktop-tauri.git
 cd claude-desktop-tauri
 
-# 安裝依賴
-pnpm install
+# 安裝 tauri-cli
+cargo install tauri-cli --version "^2.0"
 
 # 開發模式執行
-pnpm tauri dev
+cargo tauri dev
 
 # 建置正式版本
-pnpm tauri build
+cargo tauri build
 ```
 
 ### MCP Server 設定
@@ -181,6 +231,7 @@ pnpm tauri build
 1. **API 注入** - 透過 Tauri 的 `js_init_script` 注入 `claudeAppBindings` 和 `claude.settings` API
 2. **MCP 通訊** - 使用 `window.postMessage()` 配合 MessagePort 與 MCP 伺服器通訊
 3. **Extension Runtime** - 自動從已安裝的 Extensions 載入並啟動 MCP 伺服器
+4. **連線重用** - 在 2 分鐘內重用 MCP 連線，減少 timeout 錯誤
 
 ### 架構
 
@@ -190,12 +241,41 @@ src-tauri/
     lib.rs            # Tauri 主程式，插件初始化
     desktop_api.rs    # Claude Desktop API 模擬（js_init_script 注入）
     mcp/              # MCP 模組
+      mod.rs          # 模組匯出
+      config.rs       # 設定檔讀取/儲存
       client.rs       # MCP Client，子程序管理
       manager.rs      # MCP Server 管理器
       commands.rs     # Tauri commands 暴露 MCP API
+      proxy.rs        # HTTP Proxy（備用）
     extensions/       # Extensions 模組
       mod.rs          # Extension 安裝/列表/刪除/啟用
+dist/
+  index.html          # Tauri 必要的佔位檔案
 ```
+
+### 建置產出
+
+```
+src-tauri/target/release/bundle/
+├── deb/Claude Desktop_x.x.x_amd64.deb     # Debian/Ubuntu
+├── rpm/Claude Desktop-x.x.x-1.x86_64.rpm  # Fedora/RHEL
+└── appimage/Claude Desktop_x.x.x_amd64.AppImage  # 通用
+```
+
+### 跨平台支援
+
+- **Linux**: 完全支援（主要開發平台）
+- **Windows/macOS**: 程式碼相容，需在對應平台編譯（Tauri 不支援跨平台編譯）
+
+### 版本歷史
+
+#### v0.1.1 (2025-11-26)
+- 優化 MCP 連線重用機制，減少 timeout 錯誤
+- 加入 deb 套件 maintainer 資訊
+- 移除 pnpm 依賴，改用 cargo tauri 直接建置
+
+#### v0.1.0 (2025-11-26)
+- 初始版本
 
 ### 授權條款
 
