@@ -2,7 +2,7 @@
 name = "claude-desktop"
 version = "0.1.1"
 description = "Claude Desktop for Linux/Wayland"
-authors = [""]
+authors = ["Orson Wang"]
 edition = "2021"
 
 [build-dependencies]
