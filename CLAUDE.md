@@ -10,8 +10,13 @@ Linux/Wayland 原生 Claude Desktop 應用程式，使用 Tauri 2.0 建置。
 
 ## 開發指令
 ```bash
-pnpm tauri dev    # 開發模式
-pnpm tauri build  # 建置發佈版本
+cargo tauri dev    # 開發模式
+cargo tauri build  # 建置發佈版本
+```
+
+**前置需求**：安裝 tauri-cli
+```bash
+cargo install tauri-cli --version "^2.0"
 ```
 
 ## 可用工具
@@ -179,17 +184,24 @@ window.postMessage({
 
 ## 發佈資訊
 
+### v0.1.1 (2025-11-26)
+- 優化 MCP 連線重用機制，避免重複 timeout 錯誤
+- 加入 deb 套件 maintainer 資訊
+- 移除 pnpm 依賴，改用 cargo tauri 直接建置
+
 ### v0.1.0 (2025-11-26)
+- 初始版本
+
 - **GitHub**: https://github.com/orsonwang/claude-desktop-tauri
-- **Release**: https://github.com/orsonwang/claude-desktop-tauri/releases/tag/v0.1.0
+- **Release**: https://github.com/orsonwang/claude-desktop-tauri/releases
 - **授權**: Apache 2.0
 
 ### 建置產出
 ```
 src-tauri/target/release/bundle/
-├── deb/Claude Desktop_0.1.0_amd64.deb     # Debian/Ubuntu
-├── rpm/Claude Desktop-0.1.0-1.x86_64.rpm  # Fedora/RHEL
-└── appimage/Claude Desktop_0.1.0_amd64.AppImage  # 通用
+├── deb/Claude Desktop_x.x.x_amd64.deb     # Debian/Ubuntu
+├── rpm/Claude Desktop-x.x.x-1.x86_64.rpm  # Fedora/RHEL
+└── appimage/Claude Desktop_x.x.x_amd64.AppImage  # 通用
 ```
 
 ### 跨平台支援
