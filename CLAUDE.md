@@ -177,6 +177,27 @@ window.postMessage({
 
 ---
 
+## 發佈資訊
+
+### v0.1.0 (2025-11-26)
+- **GitHub**: https://github.com/orsonwang/claude-desktop-tauri
+- **Release**: https://github.com/orsonwang/claude-desktop-tauri/releases/tag/v0.1.0
+- **授權**: Apache 2.0
+
+### 建置產出
+```
+src-tauri/target/release/bundle/
+├── deb/Claude Desktop_0.1.0_amd64.deb     # Debian/Ubuntu
+├── rpm/Claude Desktop-0.1.0-1.x86_64.rpm  # Fedora/RHEL
+└── appimage/Claude Desktop_0.1.0_amd64.AppImage  # 通用
+```
+
+### 跨平台支援
+- **Linux**: ✅ 完全支援（目前開發環境）
+- **Windows/macOS**: 程式碼相容，需在對應平台編譯（Tauri 不支援跨平台編譯）
+
+---
+
 ## 參考資源
 
 ### 官方文件
