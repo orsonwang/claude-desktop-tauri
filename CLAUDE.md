@@ -184,6 +184,10 @@ window.postMessage({
 
 ## 發佈資訊
 
+### v0.1.2 (2025-11-27)
+- 更新應用程式圖標為牛頭圖案
+- 移除 tauri-plugin-updater 插件
+
 ### v0.1.1 (2025-11-26)
 - 優化 MCP 連線重用機制，避免重複 timeout 錯誤
 - 加入 deb 套件 maintainer 資訊

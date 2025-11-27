@@ -127,6 +127,10 @@ src-tauri/target/release/bundle/
 
 ### Version History
 
+#### v0.1.2 (2025-11-27)
+- Updated application icon to bull head design
+- Removed tauri-plugin-updater plugin
+
 #### v0.1.1 (2025-11-26)
 - Optimized MCP connection reuse mechanism to reduce timeout errors
 - Added deb package maintainer info
@@ -268,6 +272,10 @@ src-tauri/target/release/bundle/
 - **Windows/macOS**: 程式碼相容，需在對應平台編譯（Tauri 不支援跨平台編譯）
 
 ### 版本歷史
+
+#### v0.1.2 (2025-11-27)
+- 更新應用程式圖標為牛頭圖案
+- 移除 tauri-plugin-updater 插件
 
 #### v0.1.1 (2025-11-26)
 - 優化 MCP 連線重用機制，減少 timeout 錯誤
