@@ -1218,11 +1218,14 @@ window.__handleMcpJsonRpc = async function(serverName, request) {
             case 'tools/call':
                 var toolName = params.name;
                 var toolArgs = params.arguments || {};
+                console.log('[MCP JSON-RPC] tools/call:', serverName, toolName, JSON.stringify(toolArgs).substring(0, 100));
                 var result = await window.__CLAUDE_DESKTOP_MCP__.callTool(serverName, toolName, toolArgs);
+                console.log('[MCP JSON-RPC] tools/call result type:', typeof result, 'has content:', !!result.content);
+                // MCP server 已經返回正確格式 { content: [...] }，直接使用
                 return {
                     jsonrpc: '2.0',
                     id: id,
-                    result: { content: [{ type: 'text', text: JSON.stringify(result) }] }
+                    result: result
                 };
 
             case 'resources/list':
