@@ -39,6 +39,11 @@ pub struct McpClient {
 
 impl McpClient {
     pub fn spawn(name: &str, config: &McpServerConfig) -> Result<Self, String> {
+        eprintln!(
+            "[MCP] Spawning server '{}': {} {:?}",
+            name, config.command, config.args
+        );
+
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args)
             .envs(&config.env)
@@ -46,9 +51,11 @@ impl McpClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut process = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn MCP server '{}': {}", name, e))?;
+        let mut process = cmd.spawn().map_err(|e| {
+            eprintln!("[MCP] Failed to spawn '{}': {}", name, e);
+            format!("Failed to spawn MCP server '{}': {}", name, e)
+        })?;
+        eprintln!("[MCP] Spawned server '{}' successfully", name);
 
         let stdin = process
             .stdin
@@ -60,12 +67,18 @@ impl McpClient {
             .take()
             .ok_or_else(|| format!("Failed to get stdout for '{}'", name))?;
 
+        let stderr = process
+            .stderr
+            .take()
+            .ok_or_else(|| format!("Failed to get stderr for '{}'", name))?;
+
         let pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
         let pending_clone = pending_requests.clone();
+        let name_clone = name.to_string();
 
-        // Spawn reader thread
+        // Spawn stdout reader thread
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -81,6 +94,17 @@ impl McpClient {
                             }
                         }
                     }
+                }
+            }
+        });
+
+        // Spawn stderr reader thread to capture MCP server errors
+        let name_for_stderr = name_clone.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    eprintln!("[MCP:{}:stderr] {}", name_for_stderr, line);
                 }
             }
         });
@@ -123,6 +147,7 @@ impl McpClient {
     }
 
     pub async fn initialize(&mut self) -> Result<(), String> {
+        eprintln!("[MCP] Initializing server '{}'...", self.name);
         let params = json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {
@@ -135,7 +160,12 @@ impl McpClient {
             }
         });
 
-        let _result = self.send_request("initialize", params).await?;
+        eprintln!("[MCP] Sending initialize request to '{}'", self.name);
+        let _result = self.send_request("initialize", params).await.map_err(|e| {
+            eprintln!("[MCP] Initialize failed for '{}': {}", self.name, e);
+            e
+        })?;
+        eprintln!("[MCP] Initialize succeeded for '{}'", self.name);
 
         // Send initialized notification
         let notification = json!({

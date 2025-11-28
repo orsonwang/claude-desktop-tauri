@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -17,27 +18,59 @@ pub struct ServerInfo {
 
 pub struct McpManager {
     clients: Arc<RwLock<HashMap<String, McpClient>>>,
+    loading: AtomicBool,
 }
 
 impl McpManager {
     pub fn new() -> Self {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
+            loading: AtomicBool::new(false),
         }
     }
 
     pub async fn load_servers(&self) -> Result<Vec<String>, String> {
-        println!("[MCP Manager] load_servers() called");
+        // Prevent concurrent loading - if already loading, wait and return existing servers
+        if self
+            .loading
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            eprintln!("[MCP Manager] load_servers() - already loading, skipping");
+            // Return existing loaded servers
+            return Ok(self
+                .clients
+                .read()
+                .await
+                .keys()
+                .cloned()
+                .collect());
+        }
+
+        eprintln!("[MCP Manager] load_servers() started");
+        let result = self.do_load_servers().await;
+        self.loading.store(false, Ordering::SeqCst);
+        eprintln!("[MCP Manager] load_servers() completed");
+        result
+    }
+
+    async fn do_load_servers(&self) -> Result<Vec<String>, String> {
         let config = McpConfig::load()?;
         let mut loaded = Vec::new();
 
-        println!(
+        eprintln!(
             "[MCP Manager] Found {} servers in config file",
             config.mcp_servers.len()
         );
 
         // Load servers from claude_desktop_config.json
         for (name, server_config) in config.mcp_servers {
+            // Skip if already loaded
+            if self.clients.read().await.contains_key(&name) {
+                eprintln!("[MCP] Skipping {} - already loaded", name);
+                continue;
+            }
+
             match McpClient::spawn(&name, &server_config) {
                 Ok(mut client) => {
                     if let Err(e) = client.initialize().await {
@@ -54,48 +87,48 @@ impl McpManager {
         }
 
         // Load servers from installed extensions
-        println!("[MCP Manager] About to load extension servers...");
-        use std::io::Write;
-        std::io::stdout().flush().ok();
+        eprintln!("[MCP Manager] Loading extension servers...");
 
         match extensions::extension_get_mcp_servers().await {
             Ok(ext_servers) => {
-                println!("[MCP] Found {} extension MCP servers", ext_servers.len());
+                eprintln!("[MCP] Found {} extension MCP servers", ext_servers.len());
                 for ext_server in ext_servers {
                     // Use extension_id as server name to avoid conflicts
                     let server_name = format!("ext_{}", ext_server.extension_id);
 
-                    // Skip if already loaded (from config file)
+                    // Skip if already loaded
                     if self.clients.read().await.contains_key(&server_name) {
+                        eprintln!("[MCP] Skipping {} - already loaded", server_name);
                         continue;
                     }
 
                     let server_config = McpServerConfig {
-                        command: ext_server.command,
-                        args: ext_server.args,
-                        env: ext_server.env,
+                        command: ext_server.command.clone(),
+                        args: ext_server.args.clone(),
+                        env: ext_server.env.clone(),
                     };
 
-                    println!(
-                        "[MCP] Loading extension server '{}' ({})",
-                        server_name, ext_server.name
+                    eprintln!(
+                        "[MCP] Loading extension server '{}' ({}) - cmd: {} {:?}",
+                        server_name, ext_server.name, server_config.command, server_config.args
                     );
 
                     match McpClient::spawn(&server_name, &server_config) {
                         Ok(mut client) => {
                             if let Err(e) = client.initialize().await {
                                 eprintln!(
-                                    "Failed to initialize extension MCP server '{}': {}",
+                                    "[MCP] Failed to initialize '{}': {}",
                                     server_name, e
                                 );
                                 continue;
                             }
+                            eprintln!("[MCP] Successfully loaded '{}'", server_name);
                             loaded.push(server_name.clone());
                             self.clients.write().await.insert(server_name, client);
                         }
                         Err(e) => {
                             eprintln!(
-                                "Failed to spawn extension MCP server '{}': {}",
+                                "[MCP] Failed to spawn '{}': {}",
                                 server_name, e
                             );
                         }
