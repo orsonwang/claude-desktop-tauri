@@ -685,40 +685,43 @@ var _claudeAppBindingsImpl = {
             window.__mcpActiveConnections = {};
         }
 
-        // 初始化全域 initialize 狀態追蹤（跨連線保持）
-        if (!window.__mcpInitializeState) {
-            window.__mcpInitializeState = {};
-        }
-
         if (window.__mcpActiveConnections[serverName]) {
             var existingConn = window.__mcpActiveConnections[serverName];
             var connectionAge = Date.now() - existingConn.timestamp;
 
-            // 如果連線存在且不超過 2 分鐘，直接返回現有結果
-            // 這避免了 claude.ai 頻繁呼叫 connectToMcpServer 導致的重複建立
-            // === 重要優化：不建立新的 MessageChannel ===
-            // 之前每次都建立新 MessageChannel 會導致 claude.ai 啟動新的 timeout 計時器
-            // 現在直接返回舊結果，讓 claude.ai 使用現有的 port
+            // 如果連線存在且不超過 2 分鐘
             if (connectionAge < 120000 && existingConn.serverPort) {
-                console.log('[claudeAppBindings] connectToMcpServer: reusing existing connection for', serverName, '(age:', Math.round(connectionAge/1000), 's) - no new port');
-                // 直接返回現有結果，不發送新的 mcp-server-connected 事件
-                // 這樣 claude.ai 不會收到新的 port，也不會啟動新的 timeout 計時器
-                return Promise.resolve(existingConn.result);
+                console.log('[claudeAppBindings] connectToMcpServer: checking existing connection for', serverName, '(age:', Math.round(connectionAge/1000), 's)');
+                
+                // === 優先級 3 修復：測試 port 是否仍然有效 ===
+                try {
+                    // 嘗試發送一個測試訊息
+                    // 如果 port 已關閉，postMessage 會拋出錯誤
+                    var testMsg = { type: '__health_check__', timestamp: Date.now() };
+                    existingConn.serverPort.postMessage(testMsg);
+                    
+                    // 如果沒有錯誤，port 仍然有效，重用連線
+                    console.log('[claudeAppBindings] connectToMcpServer: port is valid, reusing connection for', serverName);
+                    return Promise.resolve(existingConn.result);
+                } catch (e) {
+                    // Port 已失效
+                    console.log('[claudeAppBindings] connectToMcpServer: port is invalid (', e.message, '), recreating connection for', serverName);
+                    delete window.__mcpActiveConnections[serverName];
+                    // 繼續往下建立新連線
+                }
+            } else {
+                console.log('[claudeAppBindings] connectToMcpServer: connection is stale for', serverName, '- recreating');
+                // 連線過舊，清除後重建
+                delete window.__mcpActiveConnections[serverName];
             }
-
-            console.log('[claudeAppBindings] connectToMcpServer: connection exists but stale for', serverName, '- recreating');
-            // 連線過舊，清除後重建
-            delete window.__mcpActiveConnections[serverName];
-            // 注意：保留 initialize 狀態 (window.__mcpInitializeState[serverName])
         }
 
         // === 只在首次連線時清除舊請求記錄 ===
-        // 注意：不要清除 initialize 的記錄，避免無限迴圈
         if (window.__mcpHandledRequests) {
             var keysToDelete = [];
             for (var key in window.__mcpHandledRequests) {
-                // 只清除非 initialize 的請求記錄
-                if (key.startsWith(serverName + ':') && key.indexOf(':initialize:') < 0) {
+                // 清除該伺服器的所有舊請求記錄
+                if (key.startsWith(serverName + ':')) {
                     keysToDelete.push(key);
                 }
             }
@@ -743,18 +746,20 @@ var _claudeAppBindingsImpl = {
                 var clientPort = channel.port1;  // 給 claude.ai 前端
                 var serverPort = channel.port2;  // 橋接到 Tauri 後端
 
-                // 使用全域 initialize 狀態（跨連線保持）
-                if (!window.__mcpInitializeState[serverName]) {
-                    window.__mcpInitializeState[serverName] = {
-                        handled: false,
-                        response: null
-                    };
-                }
-                var initState = window.__mcpInitializeState[serverName];
+                // === 優先級 4 修復：每個連線獨立的 initialize 狀態 ===
+                // 不使用全域跨連線的狀態，避免舊連線的失敗影響新連線
+                var initializeHandled = false;
+                var initializeResponse = null;
 
                 // 設置 serverPort 的 JSON-RPC 處理器（橋接到 Tauri）
                 serverPort.onmessage = function(event) {
                     var data = event.data;
+
+                    // 忽略健康檢查訊息（來自連線重用檢查）
+                    if (data && data.type === '__health_check__') {
+                        console.log('[MCP ServerPort] health check received, ignoring');
+                        return;
+                    }
 
                     if (!data || (!data.method && !data.jsonrpc)) {
                         return;
@@ -764,7 +769,14 @@ var _claudeAppBindingsImpl = {
 
                     // === 優化：initialize 完全同步處理，避免 timeout ===
                     if (data.method === 'initialize') {
-                        var state = window.__mcpInitializeState[serverName];
+                        // 使用本地連線狀態，不是全域狀態
+                        if (initializeHandled && initializeResponse) {
+                            // 已處理過，返回快取的回應（同一個連線內的重複請求）
+                            console.log('[MCP ServerPort] initialize: returning cached response for id:', data.id);
+                            serverPort.postMessage(initializeResponse);
+                            return;
+                        }
+                        
                         // 立即構建並發送 initialize 回應（同步，無 await）
                         var clientVersion = (data.params && data.params.protocolVersion) || '2024-11-05';
                         var initResponse = {
@@ -786,9 +798,10 @@ var _claudeAppBindingsImpl = {
                         };
                         console.log('[MCP ServerPort] initialize: immediate sync response for id:', data.id);
                         serverPort.postMessage(initResponse);
-                        // 標記為已處理
-                        state.handled = true;
-                        state.response = initResponse;
+                        
+                        // 標記本連線已處理 initialize
+                        initializeHandled = true;
+                        initializeResponse = initResponse;
                         return;
                     }
 
@@ -1233,6 +1246,17 @@ window.__handleMcpJsonRpc = async function(serverName, request) {
                     jsonrpc: '2.0',
                     id: id,
                     result: { prompts: [] }
+                };
+
+            case 'roots/list':
+                // MCP 伺服器請求客戶端的 roots（例如 filesystem extension 需要知道允許的目錄）
+                // 通常在 initialize 時 MCP 客戶端會告訴伺服器它的 roots
+                // 但如果伺服器主動請求，我們返回一個空列表
+                console.log('[MCP JSON-RPC] Server requested roots/list');
+                return {
+                    jsonrpc: '2.0',
+                    id: id,
+                    result: { roots: [] }
                 };
 
             case 'notifications/initialized':
