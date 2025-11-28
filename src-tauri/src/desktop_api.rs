@@ -1202,11 +1202,15 @@ window.__handleMcpJsonRpc = async function(serverName, request) {
             case 'tools/call':
                 var toolName = params.name;
                 var toolArgs = params.arguments || {};
+                console.log('[MCP JSON-RPC] tools/call:', serverName, toolName, JSON.stringify(toolArgs));
                 var result = await window.__CLAUDE_DESKTOP_MCP__.callTool(serverName, toolName, toolArgs);
+                console.log('[MCP JSON-RPC] tools/call result:', JSON.stringify(result));
+                // MCP server 的 tools/call 回傳已經是正確的格式（含 content 欄位）
+                // 直接透傳，不需要再包裝
                 return {
                     jsonrpc: '2.0',
                     id: id,
-                    result: { content: [{ type: 'text', text: JSON.stringify(result) }] }
+                    result: result
                 };
 
             case 'resources/list':
@@ -1530,17 +1534,28 @@ window['claude.settings'] = {
                 // 從 Tauri 後端取得已安裝的擴充功能
                 var extensions = await window.__TAURI__.core.invoke('extension_list');
                 console.log('[Extensions] Got installed extensions:', extensions);
-                // 轉換為 claude.ai 期望的格式
-                return extensions.map(function(ext) {
+                // 轉換為 claude.ai 期望的格式，包含 userConfig
+                var results = await Promise.all(extensions.map(async function(ext) {
+                    // 取得此 extension 的 userConfig
+                    var userConfig = {};
+                    try {
+                        userConfig = await window.__TAURI__.core.invoke('extension_get_user_config', {
+                            extensionId: ext.id
+                        });
+                    } catch (e) {
+                        console.warn('[Extensions] Failed to get userConfig for', ext.id, ':', e);
+                    }
+                    console.log('[Extensions] Extension', ext.id, 'userConfig:', JSON.stringify(userConfig));
                     return {
                         id: ext.id,
                         manifest: ext.manifest,
                         state: ext.enabled ? 'enabled' : 'disabled',
-                        settings: { isEnabled: ext.enabled },
+                        settings: { isEnabled: ext.enabled, userConfig: userConfig },
                         mcpServerState: null,
                         path: ext.path
                     };
-                });
+                }));
+                return results;
             } catch (e) {
                 console.error('[Extensions] Failed to get installed extensions:', e);
                 return [];
@@ -1561,16 +1576,59 @@ window['claude.settings'] = {
             return null;
         },
         getExtensionSettings: async function(extensionId) {
-            logApiCall('Extensions', 'getExtensionSettings');
-            return { isEnabled: true };
+            logApiCall('Extensions', 'getExtensionSettings', extensionId);
+            try {
+                // Get userConfig from backend
+                var userConfig = await window.__TAURI__.core.invoke('extension_get_user_config', {
+                    extensionId: extensionId
+                });
+                console.log('[Extensions] getExtensionSettings for', extensionId, '- userConfig:', JSON.stringify(userConfig));
+                return {
+                    isEnabled: true,
+                    userConfig: userConfig || {}
+                };
+            } catch (e) {
+                console.error('[Extensions] Failed to get extension settings:', e);
+                return { isEnabled: true, userConfig: {} };
+            }
         },
         setExtensionSettings: async function(extensionId, settings) {
-            logApiCall('Extensions', 'setExtensionSettings');
+            logApiCall('Extensions', 'setExtensionSettings', extensionId, settings);
+            console.log('[Extensions] setExtensionSettings called with:', extensionId, JSON.stringify(settings));
             try {
-                await window.__TAURI__.core.invoke('extension_set_enabled', {
-                    extensionId: extensionId,
-                    enabled: settings.isEnabled
-                });
+                // Handle isEnabled
+                if (settings.isEnabled !== undefined) {
+                    await window.__TAURI__.core.invoke('extension_set_enabled', {
+                        extensionId: extensionId,
+                        enabled: settings.isEnabled
+                    });
+                    console.log('[Extensions] Set isEnabled:', settings.isEnabled);
+                }
+
+                // Handle userConfig (camelCase from claude.ai) or user_config (snake_case)
+                var userConfig = settings.userConfig || settings.user_config;
+                if (userConfig) {
+                    console.log('[Extensions] Setting userConfig:', JSON.stringify(userConfig));
+                    for (var key in userConfig) {
+                        if (userConfig.hasOwnProperty(key)) {
+                            var value = userConfig[key];
+                            console.log('[Extensions] Setting userConfig key:', key, '=', JSON.stringify(value));
+                            await window.__TAURI__.core.invoke('extension_set_user_config', {
+                                extensionId: extensionId,
+                                key: key,
+                                value: value
+                            });
+                        }
+                    }
+                    console.log('[Extensions] User config saved successfully');
+
+                    // Trigger extension change callback to reload MCP servers
+                    if (window.__extensionCallbacks) {
+                        window.__extensionCallbacks.forEach(function(cb) {
+                            try { cb(); } catch (e) { console.error('[Extensions] Callback error:', e); }
+                        });
+                    }
+                }
             } catch (e) {
                 console.error('[Extensions] Failed to set extension settings:', e);
             }
@@ -1783,11 +1841,117 @@ window['claude.settings'] = {
         installExtensionFromPreview: async function(extensionId, dxtPath) {
             logApiCall('Extensions', 'installExtensionFromPreview');
             return null;
+        },
+        getExtensionManifest: async function(extensionId) {
+            logApiCall('Extensions', 'getExtensionManifest', extensionId);
+            try {
+                var manifest = await window.__TAURI__.core.invoke('extension_get_manifest', {
+                    extensionId: extensionId
+                });
+                console.log('[Extensions] Got manifest for', extensionId, ':', manifest);
+                return manifest;
+            } catch (e) {
+                console.error('[Extensions] Failed to get manifest:', e);
+                return null;
+            }
+        },
+        getUserConfig: async function(extensionId) {
+            logApiCall('Extensions', 'getUserConfig', extensionId);
+            try {
+                var config = await window.__TAURI__.core.invoke('extension_get_user_config', {
+                    extensionId: extensionId
+                });
+                console.log('[Extensions] Got user config for', extensionId, ':', config);
+                return config;
+            } catch (e) {
+                console.error('[Extensions] Failed to get user config:', e);
+                return {};
+            }
+        },
+        setUserConfig: async function(extensionId, key, value) {
+            logApiCall('Extensions', 'setUserConfig', extensionId, key, value);
+            try {
+                await window.__TAURI__.core.invoke('extension_set_user_config', {
+                    extensionId: extensionId,
+                    key: key,
+                    value: value
+                });
+                console.log('[Extensions] Set user config for', extensionId, ':', key, '=', value);
+                // Trigger extension change callback to reload MCP servers
+                if (window.__extensionCallbacks) {
+                    window.__extensionCallbacks.forEach(function(cb) {
+                        try { cb(); } catch (e) { console.error('[Extensions] Callback error:', e); }
+                    });
+                }
+            } catch (e) {
+                console.error('[Extensions] Failed to set user config:', e);
+            }
         }
     },
     FilePickers: {
-        getDirectoryPath: async function(options) { return ''; },
-        getFilePath: async function(options) { return ''; }
+        getDirectoryPath: async function(options) {
+            logApiCall('FilePickers', 'getDirectoryPath', options);
+            try {
+                // Use Tauri dialog plugin to select directory
+                var result = await window.__TAURI__.dialog.open({
+                    directory: true,
+                    multiple: false,
+                    title: options && options.title ? options.title : 'Select Directory'
+                });
+                console.log('[FilePickers] Raw result type:', typeof result);
+                console.log('[FilePickers] Raw result:', result);
+                console.log('[FilePickers] Raw result JSON:', JSON.stringify(result));
+                // Ensure we return a string path
+                var path = '';
+                if (result) {
+                    if (typeof result === 'string') {
+                        path = result;
+                    } else if (result.path) {
+                        path = result.path;
+                    } else if (Array.isArray(result) && result.length > 0) {
+                        path = result[0];
+                    }
+                }
+                console.log('[FilePickers] Final path:', path);
+                // Try returning as array since claude.ai might be using spread/destructuring
+                var pathArray = path ? [String(path)] : [];
+                console.log('[FilePickers] Returning array:', JSON.stringify(pathArray));
+                return pathArray;
+            } catch (e) {
+                console.error('[FilePickers] Failed to open directory dialog:', e);
+                return '';
+            }
+        },
+        getFilePath: async function(options) {
+            logApiCall('FilePickers', 'getFilePath', options);
+            try {
+                var result = await window.__TAURI__.dialog.open({
+                    directory: false,
+                    multiple: false,
+                    title: options && options.title ? options.title : 'Select File'
+                });
+                console.log('[FilePickers] Raw file result type:', typeof result);
+                console.log('[FilePickers] Raw file result:', result);
+                // Ensure we return a string path
+                var path = '';
+                if (result) {
+                    if (typeof result === 'string') {
+                        path = result;
+                    } else if (result.path) {
+                        path = result.path;
+                    } else if (Array.isArray(result) && result.length > 0) {
+                        path = result[0];
+                    }
+                }
+                console.log('[FilePickers] Final file path:', path);
+                var pathString = path ? String(path) : '';
+                console.log('[FilePickers] Returning file string:', pathString);
+                return pathString;
+            } catch (e) {
+                console.error('[FilePickers] Failed to open file dialog:', e);
+                return '';
+            }
+        }
     },
     Startup: {
         isStartupOnLoginEnabled: async function() { return false; },

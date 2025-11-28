@@ -3,9 +3,13 @@
   "identifier": "default",
   "description": "Default capabilities for the main window",
   "windows": ["main"],
+  "remote": {
+    "urls": ["https://claude.ai/*"]
+  },
   "permissions": [
     "core:default",
     "shell:allow-open",
-    "shell:default"
+    "shell:default",
+    "dialog:allow-open"
   ]
 }

@@ -2,19 +2,19 @@ mod desktop_api;
 mod extensions;
 mod mcp;
 
-use mcp::{McpManager, McpProxy};
+use mcp::McpManager;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mcp_manager = Arc::new(RwLock::new(McpManager::new()));
-    let mcp_manager_for_tauri = mcp_manager.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(desktop_api::init())
-        .manage(mcp_manager_for_tauri)
+        .manage(mcp_manager)
         .invoke_handler(tauri::generate_handler![
             mcp::mcp_load_servers,
             mcp::mcp_list_servers,
@@ -34,17 +34,6 @@ pub fn run() {
             extensions::extension_get_user_config,
             extensions::extension_get_manifest,
         ])
-        .setup(move |_app| {
-            // Start MCP proxy for tool interception
-            let proxy = McpProxy::new(3456, mcp_manager.clone());
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = proxy.start().await {
-                    eprintln!("[MCP Proxy] Failed to start: {}", e);
-                }
-            });
-
-            Ok(())
-        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
