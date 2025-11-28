@@ -597,8 +597,8 @@ var _claudeAppBindingsImpl = {
         console.log('[claudeAppBindings] unregisterBinding:', name);
     },
     listMcpServers: async function() {
-        // 優先使用快取（Array 格式）
-        if (window.__mcpServersArray && window.__mcpServersArray.length > 0) {
+        // 優先使用快取（Array 格式），但只有在已載入且有內容時
+        if (window.__mcpServersLoaded && window.__mcpServersArray && window.__mcpServersArray.length > 0) {
             console.log('[claudeAppBindings] listMcpServers: using cache (Array)');
             return window.__mcpServersArray;
         }
@@ -610,7 +610,10 @@ var _claudeAppBindingsImpl = {
                 if (window.__TAURI__) break;
             }
         }
-        if (!window.__TAURI__) return [];
+        if (!window.__TAURI__) {
+            console.error('[claudeAppBindings] listMcpServers: Tauri not available');
+            return [];
+        }
 
         try {
             await window.__TAURI__.core.invoke('mcp_load_servers');
@@ -692,14 +695,14 @@ var _claudeAppBindingsImpl = {
             // 如果連線存在且不超過 2 分鐘
             if (connectionAge < 120000 && existingConn.serverPort) {
                 console.log('[claudeAppBindings] connectToMcpServer: checking existing connection for', serverName, '(age:', Math.round(connectionAge/1000), 's)');
-                
+
                 // === 優先級 3 修復：測試 port 是否仍然有效 ===
                 try {
                     // 嘗試發送一個測試訊息
                     // 如果 port 已關閉，postMessage 會拋出錯誤
                     var testMsg = { type: '__health_check__', timestamp: Date.now() };
                     existingConn.serverPort.postMessage(testMsg);
-                    
+
                     // 如果沒有錯誤，port 仍然有效，重用連線
                     console.log('[claudeAppBindings] connectToMcpServer: port is valid, reusing connection for', serverName);
                     return Promise.resolve(existingConn.result);
@@ -776,7 +779,7 @@ var _claudeAppBindingsImpl = {
                             serverPort.postMessage(initializeResponse);
                             return;
                         }
-                        
+
                         // 立即構建並發送 initialize 回應（同步，無 await）
                         var clientVersion = (data.params && data.params.protocolVersion) || '2024-11-05';
                         var initResponse = {
@@ -798,7 +801,7 @@ var _claudeAppBindingsImpl = {
                         };
                         console.log('[MCP ServerPort] initialize: immediate sync response for id:', data.id);
                         serverPort.postMessage(initResponse);
-                        
+
                         // 標記本連線已處理 initialize
                         initializeHandled = true;
                         initializeResponse = initResponse;
@@ -2070,6 +2073,9 @@ window.__mcpServersLoaded = false;
         }
     } catch (e) {
         console.error('[Claude Desktop] Failed to preload MCP servers:', e);
+        // 標記載入失敗，讓 listMcpServers 可以重試
+        window.__mcpServersLoaded = false;
+        window.__mcpServersLoading = false;
     }
 })();
 
