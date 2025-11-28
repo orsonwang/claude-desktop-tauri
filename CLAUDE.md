@@ -180,6 +180,19 @@ window.postMessage({
 - **問題**: 每次 `connectToMcpServer` 都建立新 MessageChannel，導致 timeout
 - **解決方案**: 實作 2 分鐘內連線重用機制
 
+### MCP 第二次呼叫失敗問題（2025-11-28）
+- **問題**: MCP 工具第一次呼叫成功，第二次呼叫無回應或超時
+- **根本原因**: 
+  - stdout reader 線程在遇到 JSON 解析錯誤時直接退出
+  - 缺少 flush 操作導致請求未立即發送
+  - `MutexGuard` 跨越 await point 導致 Send trait 問題
+- **解決方案**:
+  - 改善 stdout/stderr reader 錯誤處理，遇到錯誤時記錄但不退出
+  - 在每次寫入 stdin 後立即 flush
+  - 使用區塊作用域在 await 前釋放 `MutexGuard`
+  - 新增 30 秒請求超時機制
+  - 新增詳細的日誌追蹤（請求 ID、結果大小等）
+
 ---
 
 ## 發佈資訊
