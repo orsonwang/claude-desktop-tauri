@@ -11,6 +11,14 @@ pub fn run() {
     let mcp_manager = Arc::new(RwLock::new(McpManager::new()));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 當有第二個實例嘗試啟動時，聚焦現有視窗
+            eprintln!("[Single Instance] Another instance detected, focusing existing window");
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+                let _ = window.unminimize();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(desktop_api::init())
