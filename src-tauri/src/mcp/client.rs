@@ -6,6 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
+use tokio::time::{timeout, Duration};
 
 use super::config::McpServerConfig;
 
@@ -39,11 +40,6 @@ pub struct McpClient {
 
 impl McpClient {
     pub fn spawn(name: &str, config: &McpServerConfig) -> Result<Self, String> {
-        eprintln!(
-            "[MCP] Spawning server '{}': {} {:?}",
-            name, config.command, config.args
-        );
-
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args)
             .envs(&config.env)
@@ -51,11 +47,9 @@ impl McpClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut process = cmd.spawn().map_err(|e| {
-            eprintln!("[MCP] Failed to spawn '{}': {}", name, e);
-            format!("Failed to spawn MCP server '{}': {}", name, e)
-        })?;
-        eprintln!("[MCP] Spawned server '{}' successfully", name);
+        let mut process = cmd
+            .spawn()
+            .map_err(|e| format!("Failed to spawn MCP server '{}': {}", name, e))?;
 
         let stdin = process
             .stdin
@@ -78,35 +72,88 @@ impl McpClient {
         let pending_clone = pending_requests.clone();
         let name_clone = name.to_string();
 
-        // Spawn stdout reader thread
+        // Spawn stdout reader thread with improved error handling
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    if let Ok(response) = serde_json::from_str::<Value>(&line) {
-                        if let Some(id) = response.get("id").and_then(|v| v.as_u64()) {
-                            if let Some(sender) = pending_clone.lock().unwrap().remove(&id) {
-                                if let Some(error) = response.get("error") {
-                                    let _ = sender.send(Err(error.to_string()));
-                                } else if let Some(result) = response.get("result") {
-                                    let _ = sender.send(Ok(result.clone()));
+            for line_result in reader.lines() {
+                match line_result {
+                    Ok(line) => {
+                        // Skip empty lines
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+
+                        // Try to parse as JSON-RPC response
+                        match serde_json::from_str::<Value>(&line) {
+                            Ok(response) => {
+                                // Handle JSON-RPC response
+                                if let Some(id) = response.get("id").and_then(|v| v.as_u64()) {
+                                    if let Some(sender) = pending_clone.lock().unwrap().remove(&id)
+                                    {
+                                        if let Some(error) = response.get("error") {
+                                            eprintln!(
+                                                "[MCP] Received error response: id={}, error={:?}",
+                                                id, error
+                                            );
+                                            let _ = sender.send(Err(error.to_string()));
+                                        } else if let Some(result) = response.get("result") {
+                                            eprintln!(
+                                                "[MCP] Received success response: id={}, result_size={} bytes",
+                                                id,
+                                                serde_json::to_string(result).map(|s| s.len()).unwrap_or(0)
+                                            );
+                                            let _ = sender.send(Ok(result.clone()));
+                                        }
+                                    } else {
+                                        eprintln!(
+                                            "[MCP] Received response for unknown or already-completed request: id={}",
+                                            id
+                                        );
+                                    }
+                                } else {
+                                    // Notification or malformed response
+                                    eprintln!(
+                                        "[MCP] Received notification or response without id: {:?}",
+                                        response
+                                    );
                                 }
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[MCP] Failed to parse JSON response from '{}': {} | Line: {}",
+                                    name_clone, e, line
+                                );
+                                // Don't exit - continue reading next line
                             }
                         }
                     }
+                    Err(e) => {
+                        eprintln!("[MCP] Error reading line from '{}': {}", name_clone, e);
+                        // Don't exit immediately - the error might be temporary
+                        // But if it's EOF or broken pipe, the loop will end naturally
+                    }
                 }
             }
+            eprintln!("[MCP] stdout reader thread exited for '{}'", name_clone);
         });
 
-        // Spawn stderr reader thread to capture MCP server errors
-        let name_for_stderr = name_clone.clone();
+        // Spawn stderr reader thread to prevent blocking with improved error handling
+        let name_clone = name.to_string();
         std::thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("[MCP:{}:stderr] {}", name_for_stderr, line);
+            for line_result in reader.lines() {
+                match line_result {
+                    Ok(line) => {
+                        if !line.trim().is_empty() {
+                            eprintln!("[MCP stderr] {}: {}", name_clone, line);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[MCP] Error reading stderr from '{}': {}", name_clone, e);
+                    }
                 }
             }
+            eprintln!("[MCP] stderr reader thread exited for '{}'", name_clone);
         });
 
         Ok(Self {
@@ -137,17 +184,52 @@ impl McpClient {
             .map_err(|e| format!("Failed to serialize request: {}", e))?;
         request_str.push('\n');
 
-        self.stdin
-            .lock()
-            .unwrap()
-            .write_all(request_str.as_bytes())
-            .map_err(|e| format!("Failed to write to stdin: {}", e))?;
+        eprintln!(
+            "[MCP] Sending request: id={}, method={}, server={}, params_size={} bytes",
+            id,
+            method,
+            self.name,
+            serde_json::to_string(&params).map(|s| s.len()).unwrap_or(0)
+        );
 
-        rx.await.map_err(|_| "Request cancelled".to_string())?
+        // Critical: Write and flush in a separate scope to drop the lock before await
+        {
+            let mut stdin = self.stdin.lock().unwrap();
+            stdin
+                .write_all(request_str.as_bytes())
+                .map_err(|e| format!("Failed to write to stdin: {}", e))?;
+
+            // Flush to ensure the request is sent immediately
+            stdin
+                .flush()
+                .map_err(|e| format!("Failed to flush stdin: {}", e))?;
+        } // Lock is dropped here, before the await
+
+        // Add 30-second timeout to prevent hanging requests
+        let result = timeout(Duration::from_secs(30), rx).await;
+
+        match result {
+            Ok(Ok(response)) => {
+                eprintln!("[MCP] Request completed: id={}, method={}", id, method);
+                response
+            }
+            Ok(Err(_)) => {
+                eprintln!("[MCP] Request cancelled: id={}, method={}", id, method);
+                Err("Request cancelled".to_string())
+            }
+            Err(_) => {
+                // Timeout - remove from pending_requests to prevent memory leak
+                self.pending_requests.lock().unwrap().remove(&id);
+                eprintln!(
+                    "[MCP] Request timeout after 30s: id={}, method={}, server={}",
+                    id, method, self.name
+                );
+                Err(format!("Request timeout after 30s: {}", method))
+            }
+        }
     }
 
     pub async fn initialize(&mut self) -> Result<(), String> {
-        eprintln!("[MCP] Initializing server '{}'...", self.name);
         let params = json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {
@@ -160,12 +242,7 @@ impl McpClient {
             }
         });
 
-        eprintln!("[MCP] Sending initialize request to '{}'", self.name);
-        let _result = self.send_request("initialize", params).await.map_err(|e| {
-            eprintln!("[MCP] Initialize failed for '{}': {}", self.name, e);
-            e
-        })?;
-        eprintln!("[MCP] Initialize succeeded for '{}'", self.name);
+        let _result = self.send_request("initialize", params).await?;
 
         // Send initialized notification
         let notification = json!({
@@ -177,11 +254,15 @@ impl McpClient {
             .map_err(|e| format!("Failed to serialize notification: {}", e))?;
         notif_str.push('\n');
 
-        self.stdin
-            .lock()
-            .unwrap()
-            .write_all(notif_str.as_bytes())
-            .map_err(|e| format!("Failed to send initialized notification: {}", e))?;
+        {
+            let mut stdin = self.stdin.lock().unwrap();
+            stdin
+                .write_all(notif_str.as_bytes())
+                .map_err(|e| format!("Failed to send initialized notification: {}", e))?;
+            stdin
+                .flush()
+                .map_err(|e| format!("Failed to flush initialized notification: {}", e))?;
+        } // Drop lock before any potential await
 
         // List tools
         if let Ok(result) = self.send_request("tools/list", json!({})).await {
