@@ -1,6 +1,7 @@
-mod desktop_api;
+mod error;
 mod extensions;
 mod mcp;
+mod webview;
 
 use mcp::McpManager;
 use std::sync::Arc;
@@ -22,7 +23,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(desktop_api::init())
+        .plugin(webview::init())
         .manage(mcp_manager)
         .invoke_handler(tauri::generate_handler![
             mcp::mcp_load_servers,
