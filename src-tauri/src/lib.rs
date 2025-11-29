@@ -4,6 +4,7 @@ mod mcp;
 
 use mcp::McpManager;
 use std::sync::Arc;
+use tauri::Manager;
 use tokio::sync::RwLock;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

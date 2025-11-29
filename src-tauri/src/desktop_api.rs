@@ -46,6 +46,338 @@ window.isElectron = true;
 })();
 
 // ========================================
+// 方法 29：創建假的 MessagePort，完全繞過 WebKitGTK 的 MessagePort 問題
+// ========================================
+// 問題分析（Method 28 確認）：
+// - WebKitGTK 的 MessagePort 雙向通訊有問題
+// - serverPort.postMessage() 不會拋錯，但訊息不會到達 clientPort
+// - claude.ai 設置的 handler 是 arrow function，this 無法被改變
+// - handler 內部的 this.onmessage 指向 claude.ai 內部對象，我們無法訪問
+//
+// 解決方案：
+// - 不使用真正的 MessagePort
+// - 創建一個假的 MessagePort 對象，完全由我們控制
+// - 劫持 event.ports 讓 claude.ai 收到我們的假 port
+// - 假 port 的雙向通訊完全由我們控制
+(function() {
+    console.log('[MCP METHOD 29] Initializing FakeMessagePort system...');
+
+    // 存儲每個 serverName 對應的假 port
+    window.__mcpFakePorts = {};
+    window.__mcpPortHandlers = {};  // 保持兼容
+
+    // 創建假的 MessagePort
+    function createFakeMessagePort(serverName) {
+        var fakePort = {
+            __isFakePort: true,
+            __serverName: serverName,
+            __onmessageHandler: null,
+            __listeners: [],
+            __started: false,
+
+            // 模擬 start()
+            start: function() {
+                console.log('[FakePort:' + serverName + '] start() called');
+                this.__started = true;
+            },
+
+            // 模擬 close()
+            close: function() {
+                console.log('[FakePort:' + serverName + '] close() called');
+                this.__started = false;
+            },
+
+            // 模擬 postMessage - claude.ai 發送請求時會調用
+            postMessage: function(data) {
+                console.log('[FakePort:' + serverName + '] postMessage called');
+                console.log('[FakePort:' + serverName + '] data:', JSON.stringify(data).substring(0, 200));
+
+                // 通過 window.postMessage 轉發給我們的處理邏輯
+                window.postMessage({
+                    type: 'mcp-fake-port-message',
+                    serverName: serverName,
+                    data: data
+                }, '*');
+            },
+
+            // 模擬 addEventListener
+            addEventListener: function(type, listener, options) {
+                console.log('[FakePort:' + serverName + '] addEventListener:', type);
+                if (type === 'message') {
+                    this.__listeners.push(listener);
+                    console.log('[FakePort:' + serverName + '] message listener added, total:', this.__listeners.length);
+                }
+            },
+
+            // 模擬 removeEventListener
+            removeEventListener: function(type, listener, options) {
+                console.log('[FakePort:' + serverName + '] removeEventListener:', type);
+                if (type === 'message') {
+                    var index = this.__listeners.indexOf(listener);
+                    if (index >= 0) {
+                        this.__listeners.splice(index, 1);
+                    }
+                }
+            },
+
+            // 模擬 dispatchEvent
+            dispatchEvent: function(event) {
+                console.log('[FakePort:' + serverName + '] dispatchEvent:', event.type);
+                if (event.type === 'message') {
+                    // 觸發 onmessage
+                    if (this.__onmessageHandler) {
+                        try {
+                            this.__onmessageHandler(event);
+                        } catch (e) {
+                            console.error('[FakePort:' + serverName + '] onmessage error:', e);
+                        }
+                    }
+                    // 觸發所有 listeners
+                    this.__listeners.forEach(function(listener) {
+                        try {
+                            listener(event);
+                        } catch (e) {
+                            console.error('[FakePort:' + serverName + '] listener error:', e);
+                        }
+                    });
+                }
+                return true;
+            },
+
+            // 模擬 onerror
+            onerror: null,
+
+            // 用於發送消息到 claude.ai（我們調用）
+            __deliverMessage: function(data) {
+                console.log('[FakePort:' + serverName + '] __deliverMessage called');
+                console.log('[FakePort:' + serverName + '] data id:', data && data.id);
+                console.log('[FakePort:' + serverName + '] has onmessage:', !!this.__onmessageHandler);
+                console.log('[FakePort:' + serverName + '] listeners count:', this.__listeners.length);
+
+                var event;
+                try {
+                    event = new MessageEvent('message', {
+                        data: data,
+                        origin: window.location.origin,
+                        lastEventId: '',
+                        source: null,
+                        ports: []
+                    });
+                } catch (e) {
+                    event = {
+                        data: data,
+                        type: 'message',
+                        origin: window.location.origin,
+                        source: null,
+                        ports: []
+                    };
+                }
+
+                // 直接調用 onmessage handler
+                if (this.__onmessageHandler) {
+                    console.log('[FakePort:' + serverName + '] Calling onmessage handler...');
+                    try {
+                        this.__onmessageHandler(event);
+                        console.log('[FakePort:' + serverName + '] onmessage handler completed');
+                    } catch (err) {
+                        console.error('[FakePort:' + serverName + '] onmessage handler error:', err);
+                    }
+                }
+
+                // 調用所有 listeners
+                var listenersCount = this.__listeners.length;
+                console.log('[FakePort:' + serverName + '] Calling', listenersCount, 'listeners...');
+                for (var i = 0; i < listenersCount; i++) {
+                    try {
+                        this.__listeners[i](event);
+                        console.log('[FakePort:' + serverName + '] Listener', i, 'completed');
+                    } catch (err) {
+                        console.error('[FakePort:' + serverName + '] Listener', i, 'error:', err);
+                    }
+                }
+            }
+        };
+
+        // 定義 onmessage 作為 getter/setter
+        Object.defineProperty(fakePort, 'onmessage', {
+            get: function() {
+                return this.__onmessageHandler;
+            },
+            set: function(handler) {
+                console.log('[FakePort:' + serverName + '] onmessage SET');
+                console.log('[FakePort:' + serverName + '] handler type:', typeof handler);
+                if (handler) {
+                    console.log('[FakePort:' + serverName + '] handler.toString (first 200):', handler.toString().substring(0, 200));
+                }
+                this.__onmessageHandler = handler;
+            },
+            configurable: true,
+            enumerable: true
+        });
+
+        return fakePort;
+    }
+
+    // 存儲待處理的 fake port（在 postMessage 之前創建）
+    window.__mcpPendingFakePorts = {};
+
+    // 監聽 mcp-server-connected-prepare 訊息，準備假 port
+    window.addEventListener('message', function(event) {
+        if (event.data && event.data.type === 'mcp-server-connected-prepare') {
+            var serverName = event.data.serverName;
+            console.log('[MCP METHOD 29] Preparing fake port for:', serverName);
+
+            var fakePort = createFakeMessagePort(serverName);
+            window.__mcpFakePorts[serverName] = fakePort;
+            window.__mcpPendingFakePorts[serverName] = fakePort;
+
+            // 也保存到 __mcpPortHandlers 保持兼容
+            window.__mcpPortHandlers[serverName] = {
+                port: fakePort,
+                handler: null,
+                listeners: []
+            };
+
+            console.log('[MCP METHOD 29] Fake port prepared for:', serverName);
+        }
+    });
+
+    // 攔截 mcp-server-connected 訊息，替換 event.ports
+    window.addEventListener('message', function(event) {
+        if (event.data && event.data.type === 'mcp-server-connected') {
+            var serverName = event.data.serverName;
+            var pendingFakePort = window.__mcpPendingFakePorts[serverName];
+
+            console.log('[MCP METHOD 29] Intercepted mcp-server-connected for:', serverName);
+            console.log('[MCP METHOD 29] Has pending fake port:', !!pendingFakePort);
+            console.log('[MCP METHOD 29] Original ports length:', event.ports ? event.ports.length : 0);
+
+            if (pendingFakePort) {
+                // 劫持 event.ports，讓 claude.ai 收到我們的假 port
+                try {
+                    Object.defineProperty(event, 'ports', {
+                        value: [pendingFakePort],
+                        writable: false,
+                        configurable: true
+                    });
+                    console.log('[MCP METHOD 29] Successfully hijacked event.ports for:', serverName);
+                    console.log('[MCP METHOD 29] New ports[0] is fake port:', event.ports[0].__isFakePort);
+                } catch (err) {
+                    console.error('[MCP METHOD 29] Failed to hijack event.ports:', err);
+                }
+
+                // 清除 pending
+                delete window.__mcpPendingFakePorts[serverName];
+            }
+        }
+    }, true);  // capture 模式，在 claude.ai 的 handler 之前執行
+
+    // 監聯 mcp-fake-port-message，處理 claude.ai 發送的請求
+    window.addEventListener('message', function(event) {
+        if (event.data && event.data.type === 'mcp-fake-port-message') {
+            var serverName = event.data.serverName;
+            var data = event.data.data;
+
+            console.log('[MCP METHOD 29] Received fake port message from:', serverName);
+            console.log('[MCP METHOD 29] Method:', data && data.method, 'ID:', data && data.id);
+
+            // 轉發給 serverPort 處理邏輯
+            // 這裡需要調用 window.__handleMcpJsonRpc 並返回結果
+            (async function() {
+                try {
+                    var response = await window.__handleMcpJsonRpc(serverName, data);
+                    console.log('[MCP METHOD 29] Got response for id:', data && data.id);
+
+                    if (response) {
+                        // 通過假 port 發送回應
+                        var fakePort = window.__mcpFakePorts[serverName];
+                        if (fakePort) {
+                            console.log('[MCP METHOD 29] Delivering response via fake port...');
+                            fakePort.__deliverMessage(response);
+                        } else {
+                            console.error('[MCP METHOD 29] No fake port found for:', serverName);
+                        }
+                    }
+                } catch (err) {
+                    console.error('[MCP METHOD 29] Error handling message:', err);
+                    // 發送錯誤回應
+                    if (data && data.id !== undefined) {
+                        var fakePort = window.__mcpFakePorts[serverName];
+                        if (fakePort) {
+                            fakePort.__deliverMessage({
+                                jsonrpc: '2.0',
+                                id: data.id,
+                                error: { code: -32603, message: err.toString() }
+                            });
+                        }
+                    }
+                }
+            })();
+        }
+    });
+
+    // 監聽 mcp-tool-result 訊息（保持兼容，作為備用）
+    window.addEventListener('message', function(event) {
+        if (event.data && event.data.type === 'mcp-tool-result') {
+            var serverName = event.data.serverName;
+            var response = event.data.response;
+
+            console.log('[MCP METHOD 29] Received mcp-tool-result for:', serverName);
+            console.log('[MCP METHOD 29] Response id:', response && response.id);
+
+            var fakePort = window.__mcpFakePorts[serverName];
+            if (fakePort) {
+                console.log('[MCP METHOD 29] Delivering via fake port...');
+                fakePort.__deliverMessage(response);
+            } else {
+                console.warn('[MCP METHOD 29] No fake port for:', serverName);
+                // 嘗試舊方法
+                var portInfo = window.__mcpPortHandlers[serverName];
+                if (portInfo && portInfo.handler) {
+                    console.log('[MCP METHOD 29] Fallback: calling handler directly...');
+                    try {
+                        var realEvent = new MessageEvent('message', {
+                            data: response,
+                            origin: '',
+                            lastEventId: '',
+                            source: null,
+                            ports: []
+                        });
+                        portInfo.handler(realEvent);
+                        console.log('[MCP METHOD 29] Fallback handler completed');
+                    } catch (err) {
+                        console.error('[MCP METHOD 29] Fallback handler error:', err);
+                    }
+                }
+            }
+        }
+    });
+
+    // 追蹤所有添加的 message listener
+    var listenerCount = 0;
+    var originalAddEventListener = window.addEventListener;
+    window.addEventListener = function(type, listener, options) {
+        if (type === 'message') {
+            listenerCount++;
+            console.log('[Window] message listener added, total:', listenerCount);
+        }
+        return originalAddEventListener.call(this, type, listener, options);
+    };
+
+    // 監聽所有 window.message 事件（用於調試）
+    originalAddEventListener.call(window, 'message', function(event) {
+        if (event.data && typeof event.data === 'object') {
+            var type = event.data.type;
+            if (type && type.indexOf('mcp') >= 0) {
+                console.log('[Window] MCP message received:', type, 'serverName:', event.data.serverName, 'has ports:', !!(event.ports && event.ports.length));
+            }
+        }
+    }, true);  // 使用 capture 模式優先捕獲
+
+    console.log('[MCP METHOD 29] Initialization complete');
+})();
+
+// ========================================
 // Electron IPC 模擬 - 核心機制
 // ========================================
 
@@ -654,10 +986,12 @@ var _claudeAppBindingsImpl = {
 
             window.__mcpServersArray = result;
             window.__mcpServersCache = cacheObj;
-            console.log('[claudeAppBindings] listMcpServers result (Array):', result);
+            window.__mcpServersLoaded = true;  // 標記已載入，避免重複載入
+            console.log('[claudeAppBindings] listMcpServers result (Array):', result.map(function(s) { return s.name; }));
             return result;
         } catch (e) {
             console.error('[claudeAppBindings] listMcpServers error:', e);
+            window.__mcpServersLoaded = false;  // 載入失敗，允許重試
             return [];
         }
     },
@@ -666,6 +1000,11 @@ var _claudeAppBindingsImpl = {
         return window.__mcpServersCache || {};
     },
     connectToMcpServer: function(serverNameOrConfig) {
+        // === 最優先日誌：確認函數有被呼叫 ===
+        console.log('[MCP ENTRY] ====== connectToMcpServer ENTERED ======');
+        console.log('[MCP ENTRY] TIME:', new Date().toISOString());
+        console.log('[MCP ENTRY] RAW INPUT:', JSON.stringify(serverNameOrConfig));
+
         // 詳細記錄傳入參數
         console.log('[claudeAppBindings] connectToMcpServer RAW INPUT:', serverNameOrConfig);
         console.log('[claudeAppBindings] connectToMcpServer RAW INPUT type:', typeof serverNameOrConfig);
@@ -688,36 +1027,51 @@ var _claudeAppBindingsImpl = {
             window.__mcpActiveConnections = {};
         }
 
+        // === 連線計數器（用於追蹤） ===
+        if (!window.__mcpConnectionCounter) {
+            window.__mcpConnectionCounter = {};
+        }
+        if (!window.__mcpConnectionCounter[serverName]) {
+            window.__mcpConnectionCounter[serverName] = 0;
+        }
+        window.__mcpConnectionCounter[serverName]++;
+        var connectionId = window.__mcpConnectionCounter[serverName];
+        console.log('[claudeAppBindings] connectToMcpServer #' + connectionId + ' for', serverName);
+
+        // === 方法 18：移除連線重用，每次都建立新連線，並清理舊的 ports ===
+        // 問題分析：
+        // - 方法 14 重用連線時只返回 Promise 結果，不發送 mcp-server-connected 事件
+        // - claude.ai 收到 notifications/cancelled 後認為連線失敗，不再發送 tools/call
+        // - 舊的 serverPort.onmessage 可能還在運行，造成混亂
+        // 解決方案：
+        // 1. 每次 connectToMcpServer 都建立新連線並發送 mcp-server-connected 事件
+        // 2. 關閉舊的 serverPort，避免舊連線繼續處理消息
+        console.log('[MCP ENTRY] Checking for existing connection...');
+        console.log('[MCP ENTRY] Existing connections:', JSON.stringify(Object.keys(window.__mcpActiveConnections || {})));
+
         if (window.__mcpActiveConnections[serverName]) {
             var existingConn = window.__mcpActiveConnections[serverName];
             var connectionAge = Date.now() - existingConn.timestamp;
+            console.log('[MCP ENTRY] Found existing connection #' + existingConn.connectionId + ', age:', Math.round(connectionAge/1000), 's');
+            console.log('[MCP ENTRY] toolsCallCount:', existingConn.toolsCallCount);
+            console.log('[MCP ENTRY] ====== CLEARING OLD CONNECTION (方法 18) ======');
 
-            // 如果連線存在且不超過 2 分鐘
-            if (connectionAge < 120000 && existingConn.serverPort) {
-                console.log('[claudeAppBindings] connectToMcpServer: checking existing connection for', serverName, '(age:', Math.round(connectionAge/1000), 's)');
-
-                // === 優先級 3 修復：測試 port 是否仍然有效 ===
+            // 方法 18：關閉舊的 serverPort，避免舊連線繼續處理消息
+            if (existingConn.serverPort) {
                 try {
-                    // 嘗試發送一個測試訊息
-                    // 如果 port 已關閉，postMessage 會拋出錯誤
-                    var testMsg = { type: '__health_check__', timestamp: Date.now() };
-                    existingConn.serverPort.postMessage(testMsg);
-
-                    // 如果沒有錯誤，port 仍然有效，重用連線
-                    console.log('[claudeAppBindings] connectToMcpServer: port is valid, reusing connection for', serverName);
-                    return Promise.resolve(existingConn.result);
+                    // 先移除 onmessage handler，避免收到更多消息
+                    existingConn.serverPort.onmessage = null;
+                    existingConn.serverPort.onerror = null;
+                    existingConn.serverPort.close();
+                    console.log('[MCP ENTRY] Closed old serverPort');
                 } catch (e) {
-                    // Port 已失效
-                    console.log('[claudeAppBindings] connectToMcpServer: port is invalid (', e.message, '), recreating connection for', serverName);
-                    delete window.__mcpActiveConnections[serverName];
-                    // 繼續往下建立新連線
+                    console.log('[MCP ENTRY] Failed to close old serverPort:', e);
                 }
-            } else {
-                console.log('[claudeAppBindings] connectToMcpServer: connection is stale for', serverName, '- recreating');
-                // 連線過舊，清除後重建
-                delete window.__mcpActiveConnections[serverName];
             }
+
+            delete window.__mcpActiveConnections[serverName];
         }
+        console.log('[MCP ENTRY] ====== CREATING NEW CONNECTION ======');
 
         // === 只在首次連線時清除舊請求記錄 ===
         if (window.__mcpHandledRequests) {
@@ -746,41 +1100,49 @@ var _claudeAppBindingsImpl = {
             try {
                 // 建立 MessageChannel
                 var channel = new MessageChannel();
-                var clientPort = channel.port1;  // 給 claude.ai 前端
-                var serverPort = channel.port2;  // 橋接到 Tauri 後端
+
+                // === 方法 24：交換 port1/port2 角色 ===
+                // 問題診斷（方法 22 確認）：
+                // - serverPort.postMessage() 不會拋錯，但消息不會到達 clientPort
+                // - window.postMessage 作為備用可以被接收
+                // 假設：WebKitGTK 可能對 port1 vs port2 的 transfer 有不同行為
+                // 嘗試：將 port2 作為 clientPort（transfer 給 claude.ai）
+                //       將 port1 作為 serverPort（我們保留）
+                var clientPort = channel.port2;  // 給 claude.ai 前端（改用 port2）
+                var serverPort = channel.port1;  // 橋接到 Tauri 後端（改用 port1）
+
+                console.log('[MCP CHANNEL] MessageChannel created');
+                console.log('[MCP DEBUG 24] Port roles SWAPPED: clientPort=port2, serverPort=port1');
+                // 不在 transfer 前調用 clientPort.start()，讓接收方自己處理
 
                 // === 優先級 4 修復：每個連線獨立的 initialize 狀態 ===
                 // 不使用全域跨連線的狀態，避免舊連線的失敗影響新連線
                 var initializeHandled = false;
                 var initializeResponse = null;
 
+                // === 方法 11：使用 async onmessage 並增加診斷 ===
                 // 設置 serverPort 的 JSON-RPC 處理器（橋接到 Tauri）
-                serverPort.onmessage = function(event) {
+                serverPort.onmessage = async function(event) {
                     var data = event.data;
+                    var startTime = Date.now();
 
-                    // 忽略健康檢查訊息（來自連線重用檢查）
-                    if (data && data.type === '__health_check__') {
-                        console.log('[MCP ServerPort] health check received, ignoring');
-                        return;
-                    }
+                    console.log('[MCP ServerPort #' + connectionId + '] received:', serverName, 'method:', data && data.method, 'id:', data && data.id);
 
+                    // 忽略非 JSON-RPC 訊息
                     if (!data || (!data.method && !data.jsonrpc)) {
+                        console.log('[MCP ServerPort #' + connectionId + '] ignoring non-JSON-RPC message');
                         return;
                     }
-
-                    console.log('[MCP ServerPort] received:', serverName, 'method:', data.method, 'id:', data.id);
 
                     // === 優化：initialize 完全同步處理，避免 timeout ===
                     if (data.method === 'initialize') {
                         // 使用本地連線狀態，不是全域狀態
                         if (initializeHandled && initializeResponse) {
-                            // 已處理過，返回快取的回應（同一個連線內的重複請求）
-                            console.log('[MCP ServerPort] initialize: returning cached response for id:', data.id);
+                            console.log('[MCP ServerPort #' + connectionId + '] initialize: returning cached response for id:', data.id);
                             serverPort.postMessage(initializeResponse);
                             return;
                         }
 
-                        // 立即構建並發送 initialize 回應（同步，無 await）
                         var clientVersion = (data.params && data.params.protocolVersion) || '2024-11-05';
                         var initResponse = {
                             jsonrpc: '2.0',
@@ -799,23 +1161,98 @@ var _claudeAppBindingsImpl = {
                                 }
                             }
                         };
-                        console.log('[MCP ServerPort] initialize: immediate sync response for id:', data.id);
+                        console.log('[MCP ServerPort #' + connectionId + '] initialize: immediate sync response for id:', data.id);
                         serverPort.postMessage(initResponse);
-
-                        // 標記本連線已處理 initialize
                         initializeHandled = true;
                         initializeResponse = initResponse;
                         return;
                     }
 
-                    // 其他方法使用 async 處理
-                    (async function() {
-                        var response = await window.__handleMcpJsonRpc(serverName, data);
-                        if (response) {
-                            console.log('[MCP ServerPort] sending response:', serverName, 'id:', response.id);
-                            serverPort.postMessage(response);
+                    // === 方法 22：測試 serverPort -> clientPort 方向是否工作 ===
+                    // 在處理之前立即發送一個 echo 消息
+                    try {
+                        var echoMsg = { __echo__: true, receivedMethod: data.method, receivedId: data.id, timestamp: Date.now() };
+                        console.log('[MCP DEBUG 22] Sending immediate echo BEFORE processing:', JSON.stringify(echoMsg));
+                        serverPort.postMessage(echoMsg);
+                        console.log('[MCP DEBUG 22] Echo sent successfully');
+                    } catch (echoErr) {
+                        console.error('[MCP DEBUG 22] Echo FAILED:', echoErr);
+                    }
+
+                    // === 方法 11 + 21：直接 await 並追蹤 tools/call ===
+                    try {
+                        var isToolsCall = data.method === 'tools/call';
+                        if (isToolsCall) {
+                            console.log('[MCP DEBUG 21] ======== TOOLS/CALL REQUEST RECEIVED ========');
+                            console.log('[MCP DEBUG 21] ServerPort #' + connectionId + ', id:', data.id);
+                            console.log('[MCP DEBUG 21] Tool name:', data.params && data.params.name);
                         }
-                    })();
+                        console.log('[MCP ServerPort #' + connectionId + '] processing method:', data.method, 'id:', data.id);
+
+                        var response = await window.__handleMcpJsonRpc(serverName, data);
+
+                        var elapsed = Date.now() - startTime;
+                        if (isToolsCall) {
+                            console.log('[MCP DEBUG 21] ======== TOOLS/CALL RESPONSE READY ========');
+                            console.log('[MCP DEBUG 21] Elapsed:', elapsed, 'ms, response:', !!response);
+                        }
+                        console.log('[MCP ServerPort #' + connectionId + '] got response after', elapsed, 'ms for id:', data.id);
+
+                        if (response) {
+                            // 診斷：檢查 response 物件
+                            var responseStr = JSON.stringify(response);
+                            console.log('[MCP ServerPort #' + connectionId + '] response size:', responseStr.length, 'bytes');
+                            console.log('[MCP ServerPort #' + connectionId + '] response preview:', responseStr.substring(0, 200));
+
+                            // 嘗試 postMessage
+                            if (isToolsCall) {
+                                console.log('[MCP DEBUG 21] ======== SENDING TOOLS/CALL RESPONSE ========');
+                                console.log('[MCP DEBUG 21] Response id:', response.id, 'result:', !!response.result);
+                            }
+                            console.log('[MCP ServerPort #' + connectionId + '] calling postMessage for id:', response.id);
+                            serverPort.postMessage(response);
+                            console.log('[MCP ServerPort #' + connectionId + '] postMessage completed (no throw) for id:', response.id);
+                            if (isToolsCall) {
+                                console.log('[MCP DEBUG 21] ======== TOOLS/CALL RESPONSE SENT ========');
+                            }
+
+                            // === 方法 22：額外通過 window.postMessage 發送回應作為備用 ===
+                            // 如果 serverPort.postMessage 不工作，這可能是一個備用方案
+                            if (isToolsCall) {
+                                console.log('[MCP DEBUG 22] Also sending via window.postMessage as backup');
+                                window.postMessage({
+                                    type: 'mcp-tool-result',
+                                    serverName: serverName,
+                                    response: response
+                                }, '*');
+                                console.log('[MCP DEBUG 22] window.postMessage sent');
+                            }
+
+                            // 診斷：再發送一個簡單的 ack 訊息，看是否能到達
+                            var ackMsg = { __ack__: true, id: response.id, timestamp: Date.now() };
+                            serverPort.postMessage(ackMsg);
+                            console.log('[MCP ServerPort #' + connectionId + '] ack message sent for id:', response.id);
+                        } else {
+                            console.warn('[MCP ServerPort #' + connectionId + '] no response for method:', data.method);
+                            if (isToolsCall) {
+                                console.error('[MCP DEBUG 21] ======== NO RESPONSE FOR TOOLS/CALL! ========');
+                            }
+                        }
+                    } catch (err) {
+                        console.error('[MCP ServerPort #' + connectionId + '] ERROR processing', data.method, ':', err);
+                        // 發送錯誤回應
+                        if (data.id !== undefined && data.id !== null) {
+                            try {
+                                serverPort.postMessage({
+                                    jsonrpc: '2.0',
+                                    id: data.id,
+                                    error: { code: -32603, message: err.toString() }
+                                });
+                            } catch (postErr) {
+                                console.error('[MCP ServerPort #' + connectionId + '] failed to send error response:', postErr);
+                            }
+                        }
+                    }
                 };
                 serverPort.onerror = function(e) {
                     console.error('[MCP ServerPort] error:', serverName, e);
@@ -828,29 +1265,45 @@ var _claudeAppBindingsImpl = {
                 serverPort.start();
                 console.log('[claudeAppBindings] connectToMcpServer: serverPort started for', serverName);
 
-                // 直接發送，不使用 setTimeout（serverPort 已經 start 了）
-                console.log('[claudeAppBindings] connectToMcpServer: posting mcp-server-connected message with port for', serverName);
+                // === 方法 29：使用假 MessagePort 繞過 WebKitGTK 問題 ===
+                // 先發送 prepare 訊息創建假 port，然後發送 connected 訊息
+                // 我們的 capture listener 會劫持 event.ports，替換成假 port
+                console.log('[MCP METHOD 29] Starting fake port flow for', serverName);
                 console.log('[claudeAppBindings] connectToMcpServer: clientPort ready:', !!clientPort, 'serverPort ready:', !!serverPort);
 
-                // === 關鍵！模擬官方流程：透過 window.postMessage 發送 McpServerConnected ===
-                // 這會觸發 claude.ai 前端的 message 事件監聽器
-                // 官方格式：{ type: 'mcp-server-connected', serverName: string, uuid: string }
-                // 第三個參數是 [port]，這樣 event.ports[0] 就會包含 MessagePort
+                // 步驟 1：發送 prepare 訊息，創建假 port
                 window.postMessage({
-                    type: 'mcp-server-connected',
-                    serverName: serverName,
-                    uuid: uuid
-                }, '*', [clientPort]);
+                    type: 'mcp-server-connected-prepare',
+                    serverName: serverName
+                }, '*');
+                console.log('[MCP METHOD 29] Sent prepare message for', serverName);
 
-                console.log('[claudeAppBindings] connectToMcpServer: message posted for', serverName, 'uuid:', uuid);
+                // 給一個微小的延遲確保 prepare 訊息被處理
+                // 使用 setTimeout(0) 確保事件循環處理了 prepare 訊息
+                setTimeout(function() {
+                    console.log('[MCP METHOD 29] Sending mcp-server-connected for', serverName);
 
-                // 儲存連線資訊，避免重複建立
+                    // 步驟 2：發送 connected 訊息（帶著真正的 port）
+                    // 我們的 capture listener 會攔截並替換 event.ports
+                    window.postMessage({
+                        type: 'mcp-server-connected',
+                        serverName: serverName,
+                        uuid: uuid
+                    }, '*', [clientPort]);
+
+                    console.log('[claudeAppBindings] connectToMcpServer #' + connectionId + ': message posted for', serverName, 'uuid:', uuid);
+                }, 0);
+
+                // 方法 29：假 port 系統會處理所有通訊
+
+                // 儲存連線資訊（包含 connectionId 方便追蹤）
                 var result = { serverName: serverName, uuid: uuid };
                 window.__mcpActiveConnections[serverName] = {
                     result: result,
                     channel: channel,
                     serverPort: serverPort,
-                    timestamp: Date.now()
+                    timestamp: Date.now(),
+                    connectionId: connectionId
                 };
 
                 // Promise resolve（官方的 ipcRenderer.invoke 也會 resolve，但頁面主要靠 message 事件取得 port）
@@ -968,15 +1421,24 @@ window.__CLAUDE_DESKTOP_MCP__ = {
     },
 
     callTool: async function(server, tool, args) {
-        if (!window.__TAURI__) return { error: 'Tauri not available' };
+        // === 方法 21：詳細追蹤 Tauri invoke 返回 ===
+        console.log('[MCP DEBUG 21] callTool START:', server, tool);
+        if (!window.__TAURI__) {
+            console.error('[MCP DEBUG 21] Tauri not available!');
+            return { error: 'Tauri not available' };
+        }
         try {
-            return await window.__TAURI__.core.invoke('mcp_call_tool', {
+            console.log('[MCP DEBUG 21] Calling Tauri invoke...');
+            var result = await window.__TAURI__.core.invoke('mcp_call_tool', {
                 server: server,
                 tool: tool,
                 arguments: args || {}
             });
+            console.log('[MCP DEBUG 21] Tauri invoke RETURNED:', typeof result);
+            console.log('[MCP DEBUG 21] Result preview:', JSON.stringify(result).substring(0, 200));
+            return result;
         } catch (e) {
-            console.error('[__CLAUDE_DESKTOP_MCP__] callTool error:', e);
+            console.error('[MCP DEBUG 21] callTool EXCEPTION:', e);
             return { error: e.toString() };
         }
     },
@@ -1216,17 +1678,42 @@ window.__handleMcpJsonRpc = async function(serverName, request) {
                 };
 
             case 'tools/call':
+                // === 方法 21：詳細追蹤 tools/call 處理流程 ===
                 var toolName = params.name;
                 var toolArgs = params.arguments || {};
-                console.log('[MCP JSON-RPC] tools/call:', serverName, toolName, JSON.stringify(toolArgs).substring(0, 100));
-                var result = await window.__CLAUDE_DESKTOP_MCP__.callTool(serverName, toolName, toolArgs);
-                console.log('[MCP JSON-RPC] tools/call result type:', typeof result, 'has content:', !!result.content);
-                // MCP server 已經返回正確格式 { content: [...] }，直接使用
-                return {
-                    jsonrpc: '2.0',
-                    id: id,
-                    result: result
-                };
+                console.log('[MCP DEBUG 21] tools/call HANDLER START:', serverName, toolName, 'id:', id);
+                console.log('[MCP DEBUG 21] tools/call args:', JSON.stringify(toolArgs).substring(0, 100));
+
+                try {
+                    console.log('[MCP DEBUG 21] Calling __CLAUDE_DESKTOP_MCP__.callTool...');
+                    var result = await window.__CLAUDE_DESKTOP_MCP__.callTool(serverName, toolName, toolArgs);
+                    console.log('[MCP DEBUG 21] callTool RETURNED for id:', id);
+                    console.log('[MCP DEBUG 21] result type:', typeof result, 'has content:', !!(result && result.content));
+                    console.log('[MCP DEBUG 21] result preview:', JSON.stringify(result).substring(0, 300));
+
+                    // 方法 16：記錄 tools/call 成功次數，用於判斷是否觸發 auto-reconnect
+                    if (window.__mcpActiveConnections && window.__mcpActiveConnections[serverName]) {
+                        var conn = window.__mcpActiveConnections[serverName];
+                        conn.toolsCallCount = (conn.toolsCallCount || 0) + 1;
+                        console.log('[MCP DEBUG 21] tools/call success count for', serverName, ':', conn.toolsCallCount);
+                    }
+
+                    // MCP server 已經返回正確格式 { content: [...] }，直接使用
+                    var response = {
+                        jsonrpc: '2.0',
+                        id: id,
+                        result: result
+                    };
+                    console.log('[MCP DEBUG 21] tools/call RETURNING response for id:', id);
+                    return response;
+                } catch (toolCallErr) {
+                    console.error('[MCP DEBUG 21] tools/call EXCEPTION for id:', id, toolCallErr);
+                    return {
+                        jsonrpc: '2.0',
+                        id: id,
+                        error: { code: -32603, message: toolCallErr.toString() }
+                    };
+                }
 
             case 'resources/list':
                 var servers = window.__mcpServersCache || {};
@@ -1271,14 +1758,22 @@ window.__handleMcpJsonRpc = async function(serverName, request) {
                 return null;
 
             case 'notifications/cancelled':
-                // 取消通知，不需要回應
-                // 注意：claude.ai 會在初始化時發送多個 initialize 請求，
-                // 其中一些可能因為 race condition 而 timeout。
-                // 但這不影響實際功能，因為至少有一個 initialize 成功了。
+                // === 方法 20：完全忽略 notifications/cancelled (requestId=0) ===
+                // 問題分析：
+                // - requestId=0 是 initialize 請求超時
+                // - 但日誌顯示 tools/call 仍然可以發送，表示連線實際上是正常的
+                // - notifications/cancelled 可能只是一個 timing 警告，不影響功能
+                // - claude.ai 的超時閾值可能太短（可能只有幾百毫秒）
+                // 解決方案：
+                // - 完全忽略 requestId=0 的 notifications/cancelled
+                // - 只記錄日誌，不觸發任何重連
+                // - 測試連線是否實際上是正常的
+                console.log('[MCP DEBUG 20] notifications/cancelled for:', serverName, 'requestId:', params.requestId);
+
                 if (params.requestId === 0) {
-                    // initialize timeout - 這是已知的 race condition，靜默處理
-                    // 連線實際上是正常的（tools/list 等都成功了）
-                    console.log('[MCP] Initialize timeout notification received (expected race condition, connection is OK)');
+                    // 方法 20：完全忽略 initialize 超時，只記錄日誌
+                    console.log('[MCP DEBUG 20] Initialize timeout detected, but IGNORING (connection still works)');
+                    console.log('[MCP DEBUG 20] This is likely just a timing issue, not a real failure');
                 } else {
                     console.log('[MCP JSON-RPC] Request cancelled - requestId:', params.requestId, 'reason:', params.reason);
                 }

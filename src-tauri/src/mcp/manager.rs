@@ -17,7 +17,7 @@ pub struct ServerInfo {
 }
 
 pub struct McpManager {
-    clients: Arc<RwLock<HashMap<String, McpClient>>>,
+    clients: Arc<RwLock<HashMap<String, Arc<McpClient>>>>,
     loading: AtomicBool,
 }
 
@@ -38,13 +38,7 @@ impl McpManager {
         {
             eprintln!("[MCP Manager] load_servers() - already loading, skipping");
             // Return existing loaded servers
-            return Ok(self
-                .clients
-                .read()
-                .await
-                .keys()
-                .cloned()
-                .collect());
+            return Ok(self.clients.read().await.keys().cloned().collect());
         }
 
         eprintln!("[MCP Manager] load_servers() started");
@@ -78,7 +72,7 @@ impl McpManager {
                         continue;
                     }
                     loaded.push(name.clone());
-                    self.clients.write().await.insert(name, client);
+                    self.clients.write().await.insert(name, Arc::new(client));
                 }
                 Err(e) => {
                     eprintln!("Failed to spawn MCP server '{}': {}", name, e);
@@ -116,21 +110,18 @@ impl McpManager {
                     match McpClient::spawn(&server_name, &server_config) {
                         Ok(mut client) => {
                             if let Err(e) = client.initialize().await {
-                                eprintln!(
-                                    "[MCP] Failed to initialize '{}': {}",
-                                    server_name, e
-                                );
+                                eprintln!("[MCP] Failed to initialize '{}': {}", server_name, e);
                                 continue;
                             }
                             eprintln!("[MCP] Successfully loaded '{}'", server_name);
                             loaded.push(server_name.clone());
-                            self.clients.write().await.insert(server_name, client);
+                            self.clients
+                                .write()
+                                .await
+                                .insert(server_name, Arc::new(client));
                         }
                         Err(e) => {
-                            eprintln!(
-                                "[MCP] Failed to spawn '{}': {}",
-                                server_name, e
-                            );
+                            eprintln!("[MCP] Failed to spawn '{}': {}", server_name, e);
                         }
                     }
                 }
@@ -161,18 +152,26 @@ impl McpManager {
         tool: &str,
         arguments: Value,
     ) -> Result<Value, String> {
-        let clients = self.clients.read().await;
-        let client = clients
-            .get(server)
-            .ok_or_else(|| format!("Server '{}' not found", server))?;
+        // Clone the Arc to avoid holding the lock during the async call
+        let client = {
+            let clients = self.clients.read().await;
+            clients
+                .get(server)
+                .ok_or_else(|| format!("Server '{}' not found", server))?
+                .clone()
+        }; // Lock released here
         client.call_tool(tool, arguments).await
     }
 
     pub async fn read_resource(&self, server: &str, uri: &str) -> Result<Value, String> {
-        let clients = self.clients.read().await;
-        let client = clients
-            .get(server)
-            .ok_or_else(|| format!("Server '{}' not found", server))?;
+        // Clone the Arc to avoid holding the lock during the async call
+        let client = {
+            let clients = self.clients.read().await;
+            clients
+                .get(server)
+                .ok_or_else(|| format!("Server '{}' not found", server))?
+                .clone()
+        }; // Lock released here
         client.read_resource(uri).await
     }
 

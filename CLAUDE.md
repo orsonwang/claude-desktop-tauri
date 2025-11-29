@@ -182,7 +182,7 @@ window.postMessage({
 
 ### MCP 第二次呼叫失敗問題（2025-11-28）
 - **問題**: MCP 工具第一次呼叫成功，第二次呼叫無回應或超時
-- **根本原因**: 
+- **根本原因**:
   - stdout reader 線程在遇到 JSON 解析錯誤時直接退出
   - 缺少 flush 操作導致請求未立即發送
   - `MutexGuard` 跨越 await point 導致 Send trait 問題
@@ -192,6 +192,117 @@ window.postMessage({
   - 使用區塊作用域在 await 前釋放 `MutexGuard`
   - 新增 30 秒請求超時機制
   - 新增詳細的日誌追蹤（請求 ID、結果大小等）
+
+---
+
+## ✅ MCP 連線問題（2025-11-29 已解決 - 方法 29）
+
+### 解決方案摘要
+**根本原因**：WebKitGTK 的 MessagePort 雙向通訊有缺陷 - `serverPort.postMessage()` 訊息無法到達 `clientPort`。
+
+**解決方案**：創建假的 MessagePort 對象，完全繞過 WebKitGTK 原生實作：
+1. 創建模擬 MessagePort API 的 JavaScript 對象
+2. 劫持 `event.ports`，讓 claude.ai 收到我們的假 port
+3. 雙向通訊完全由 JavaScript 控制
+
+**程式碼位置**：`desktop_api.rs` 第 48-378 行
+
+---
+
+## 📜 MCP 問題調查歷史（2025-11-28）
+
+### 問題描述
+MCP 工具在啟動約 1 分鐘後失效，或者第一次/第二次呼叫就失敗。
+
+### 已嘗試但失敗的方法
+
+#### 方法 1: MessagePort Heartbeat（❌ 失敗）
+- **假設**: MessagePort 可能因為閒置而失效
+- **實作**: 每 30 秒發送 `__heartbeat__` 訊息保持連線活躍
+- **結果**: 失敗，MCP 仍然無法使用
+- **原因分析**: MessagePort 不會因為閒置而失效
+
+#### 方法 2: mcpStatusChanged IPC 事件（❌ 失敗）
+- **假設**: 需要像官方 Electron 一樣發送 `mcpStatusChanged` 事件
+- **實作**: 在 heartbeat 中觸發 `window.dispatchEvent(new CustomEvent('mcpStatusChanged', ...))`
+- **結果**: 失敗，MCP 完全無法使用
+- **原因分析**: claude.ai 可能不監聽這個事件，或事件格式不對
+
+#### 方法 3: 移除 2 分鐘連線重用時間限制（❌ 失敗）
+- **假設**: 2 分鐘後連線被判斷為 stale 並重建，導致問題
+- **實作**: 移除 `connectionAge < 120000` 檢查，只要 port 有效就重用
+- **結果**: 失敗，第一次就失敗
+- **原因分析**: 問題不在時間限制
+
+#### 方法 4: 每次都建立新連線（❌ 失敗）
+- **假設**:
+  1. MessagePort 只能 transfer 一次
+  2. claude.ai 是 SPA，頁面內導航後前端可能移除舊的 MessagePort 監聽器
+  3. 重用連線只返回 Promise 結果而不 postMessage，前端收不到 port
+- **實作**: 每次 `connectToMcpServer` 都清除舊連線並建立新 MessageChannel
+- **結果**: 失敗，問題依舊
+- **已恢復**: 恢復到原本的 2 分鐘連線重用機制
+
+#### 方法 5: 添加詳細調試日誌（✅ 有助於診斷）
+- **目的**: 追蹤訊息流向，確定問題確切位置
+- **實作**:
+  1. 追蹤所有 `window.addEventListener('message')` 呼叫
+  2. 監聽所有 MCP 相關的 `window.message` 事件
+  3. 在 `serverPort.postMessage` 添加 try-catch 和成功/失敗日誌
+- **結果**: 發現後端（Rust）所有 `tools/call` 都成功，問題在前端
+
+#### 方法 6: 修復 listMcpServers 快取標記 + 移除連線重用（🔄 測試中）
+- **發現的問題**:
+  1. `listMcpServers` 成功後沒有設定 `window.__mcpServersLoaded = true`
+  2. 導致每次呼叫都重新載入 MCP servers
+  3. 連線重用時只返回 Promise 結果，但不發送 `mcp-server-connected` 事件
+  4. claude.ai 前端期望每次 `connectToMcpServer` 都收到新的 MessagePort
+- **修復**:
+  1. 在 `listMcpServers` 成功後設定 `window.__mcpServersLoaded = true`
+  2. 移除連線重用機制，每次都建立新 MessageChannel 並發送 `mcp-server-connected`
+- **程式碼位置**: `desktop_api.rs` 第 681-689 行, 第 719-729 行
+- **待驗證**: 用戶測試中
+
+### 根本原因分析
+1. **連線重用的問題**:
+   - 當重用連線時，只返回 `Promise.resolve(existingConn.result)`
+   - 但 claude.ai 前端透過 `window.addEventListener('message')` 監聽 `mcp-server-connected` 事件來獲取 MessagePort
+   - 如果不發送 `mcp-server-connected` 事件，前端就沒有 port 可以發送請求
+2. **listMcpServers 快取標記缺失**:
+   - 每次呼叫都會執行 `mcp_load_servers`，雖然後端有防重複機制，但仍產生不必要的開銷
+
+### 參考：官方 Electron 實作
+位置: `/home/orsonwang/projects/claude_desktop_tauri/reference/claude-official/`
+
+#### 關鍵發現（2025-11-28 更新）
+
+**主進程 (index.js)**:
+```javascript
+// 使用 MessageChannelMain 建立通道
+webContents.postMessage(Ya.McpServerConnected, {serverName, uuid}, [port2])
+```
+
+**渲染進程 preload (mainView.js)**:
+```javascript
+// ipcRenderer 接收 port，轉發給頁面
+c.ipcRenderer.on(I.McpServerConnected,(t,e)=>{
+    window.postMessage({
+        type:I.McpServerConnected,
+        serverName:e.serverName,
+        uuid:e==null?void 0:e.uuid
+    },"*",t.ports)  // 關鍵！t.ports 是從 ipcRenderer 接收的
+});
+
+// 自動重連事件
+c.ipcRenderer.on(I.McpServerAutoReconnect,(t,e)=>{
+    window.postMessage({type:I.McpServerAutoReconnect,serverName:e},"*")
+});
+```
+
+**重要區別**:
+- 官方：主進程建立 MessageChannelMain → ipcRenderer.on 接收 → window.postMessage 轉發
+- 我們：js_init_script 直接建立 MessageChannel → window.postMessage 傳遞
+- 問題：我們的 port 可能因為 SPA 導航而失效，因為 clientPort 的 onmessage 監聽器可能被移除
 
 ---
 

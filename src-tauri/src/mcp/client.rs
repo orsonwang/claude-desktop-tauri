@@ -111,11 +111,23 @@ impl McpClient {
                                         );
                                     }
                                 } else {
-                                    // Notification or malformed response
-                                    eprintln!(
-                                        "[MCP] Received notification or response without id: {:?}",
-                                        response
-                                    );
+                                    // This might be a request from server to client (e.g., roots/list)
+                                    if let Some(method) =
+                                        response.get("method").and_then(|v| v.as_str())
+                                    {
+                                        eprintln!(
+                                            "[MCP] Received request from server '{}': method={}, treating as notification",
+                                            name_clone, method
+                                        );
+                                        // Server-to-client requests (like roots/list) should be handled
+                                        // but we currently don't support them - just log
+                                    } else {
+                                        // Notification or malformed response
+                                        eprintln!(
+                                            "[MCP] Received notification or response without id: {:?}",
+                                            response
+                                        );
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -178,7 +190,12 @@ impl McpClient {
         });
 
         let (tx, rx) = oneshot::channel();
-        self.pending_requests.lock().unwrap().insert(id, tx);
+        {
+            let mut pending = self.pending_requests.lock().unwrap();
+            eprintln!("[MCP] Pending requests before insert: {}", pending.len());
+            pending.insert(id, tx);
+            eprintln!("[MCP] Pending requests after insert: {}", pending.len());
+        }
 
         let mut request_str = serde_json::to_string(&request)
             .map_err(|e| format!("Failed to serialize request: {}", e))?;
@@ -233,7 +250,6 @@ impl McpClient {
         let params = json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {
-                "roots": { "listChanged": true },
                 "sampling": {}
             },
             "clientInfo": {

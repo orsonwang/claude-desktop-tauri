@@ -27,11 +27,26 @@ pub async fn mcp_call_tool(
     tool: String,
     arguments: Value,
 ) -> Result<Value, String> {
-    manager
+    eprintln!(
+        "[TAURI] mcp_call_tool START: server={}, tool={}",
+        server, tool
+    );
+    let result = manager
         .read()
         .await
         .call_tool(&server, &tool, arguments)
-        .await
+        .await;
+    match &result {
+        Ok(_) => eprintln!(
+            "[TAURI] mcp_call_tool SUCCESS: server={}, tool={}",
+            server, tool
+        ),
+        Err(e) => eprintln!(
+            "[TAURI] mcp_call_tool ERROR: server={}, tool={}, error={}",
+            server, tool, e
+        ),
+    }
+    result
 }
 
 #[tauri::command]
