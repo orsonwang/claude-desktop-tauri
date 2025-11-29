@@ -8,6 +8,9 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use tokio::time::{timeout, Duration};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use super::config::McpServerConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +49,13 @@ impl McpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        // Windows: Hide console window for child processes
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
 
         let mut process = cmd
             .spawn()
