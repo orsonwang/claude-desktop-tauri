@@ -8,8 +8,15 @@
   },
   "permissions": [
     "core:default",
+    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
     "shell:allow-open",
     "shell:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "clipboard-manager:allow-read-image",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-image",
+    "clipboard-manager:allow-write-text"
   ]
 }

@@ -10,6 +10,7 @@
 //! 3. `03_electron_api.js` - Electron IPC simulation
 //! 4. `04_mcp_bridge.js` - MCP transport and JSON-RPC
 //! 5. `05_mcp_manager.js` - MCP server manager
+//! 6. `06_file_handling.js` - Drag-drop and clipboard support
 
 use tauri::{
     plugin::{Builder, TauriPlugin},
@@ -28,6 +29,8 @@ mod scripts {
     pub const MCP_BRIDGE: &str = include_str!("scripts/04_mcp_bridge.js");
     /// MCP manager
     pub const MCP_MANAGER: &str = include_str!("scripts/05_mcp_manager.js");
+    /// File drag-drop and clipboard handling
+    pub const FILE_HANDLING: &str = include_str!("scripts/06_file_handling.js");
 }
 
 /// Builds the complete init script by concatenating all JavaScript files.
@@ -45,6 +48,7 @@ window.isElectron = true;
         scripts::ELECTRON_API,
         scripts::MCP_BRIDGE,
         scripts::MCP_MANAGER,
+        scripts::FILE_HANDLING,
     ]
     .join("\n\n")
 }
@@ -67,6 +71,7 @@ mod tests {
         assert!(!scripts::ELECTRON_API.is_empty());
         assert!(!scripts::MCP_BRIDGE.is_empty());
         assert!(!scripts::MCP_MANAGER.is_empty());
+        assert!(!scripts::FILE_HANDLING.is_empty());
     }
 
     #[test]

@@ -30,7 +30,8 @@ window.__toolResults = {};
         );
 
         // 注入 MCP 工具到 POST 請求
-        if (isClaudeApi && method === 'POST' && body) {
+        // 只處理 JSON body，跳過 FormData（檔案上傳）
+        if (isClaudeApi && method === 'POST' && body && typeof body === 'string') {
             try {
                 var bodyObj = JSON.parse(body);
 
