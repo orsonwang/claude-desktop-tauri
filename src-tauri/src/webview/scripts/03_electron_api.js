@@ -1160,8 +1160,8 @@ window.claudeAppSettings = {
 };
 
 window.process = {
-    platform: 'darwin',
-    arch: 'x64',
+    platform: window.__TAURI_PLATFORM__ || 'linux',
+    arch: window.__TAURI_ARCH__ || 'x64',
     type: 'renderer',
     version: 'v20.18.0',
     versions: {

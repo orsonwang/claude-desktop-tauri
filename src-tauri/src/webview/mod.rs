@@ -33,16 +33,48 @@ mod scripts {
     pub const FILE_HANDLING: &str = include_str!("scripts/06_file_handling.js");
 }
 
+/// Returns the platform string for the current OS.
+fn get_platform() -> &'static str {
+    #[cfg(target_os = "windows")]
+    { "win32" }
+    #[cfg(target_os = "macos")]
+    { "darwin" }
+    #[cfg(target_os = "linux")]
+    { "linux" }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    { "linux" }
+}
+
+/// Returns the architecture string for the current platform.
+fn get_arch() -> &'static str {
+    #[cfg(target_arch = "x86_64")]
+    { "x64" }
+    #[cfg(target_arch = "aarch64")]
+    { "arm64" }
+    #[cfg(target_arch = "x86")]
+    { "ia32" }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "x86")))]
+    { "x64" }
+}
+
 /// Builds the complete init script by concatenating all JavaScript files.
 fn build_init_script() -> String {
-    // Header comment
-    let header = r#"// Claude Desktop API - Injected before page load
+    let platform = get_platform();
+    let arch = get_arch();
+
+    // Header comment with platform info
+    let header = format!(
+        r#"// Claude Desktop API - Injected before page load
 window.isElectron = true;
-"#;
+window.__TAURI_PLATFORM__ = '{}';
+window.__TAURI_ARCH__ = '{}';
+"#,
+        platform, arch
+    );
 
     // Concatenate all scripts in order
     [
-        header,
+        header.as_str(),
         scripts::POLYFILLS,
         scripts::FAKE_PORT,
         scripts::ELECTRON_API,
