@@ -1,6 +1,6 @@
 [package]
 name = "claude-desktop"
-version = "0.3.1"
+version = "0.3.2"
 description = "Claude Desktop with Tauri"
 authors = ["Orson Wang"]
 edition = "2021"
