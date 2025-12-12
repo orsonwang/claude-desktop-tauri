@@ -26,7 +26,7 @@ window.electronAPI = {
 
     // App 相關
     getAppVersion: function() {
-        return '0.14.10';
+        return '1.0.1768';
     },
     getSupportedFeatures: async function() {
         return {
@@ -542,7 +542,7 @@ window['claude.settings'] = {
                 nodeVersion: '20.18.0',
                 builtInNodeVersion: '20.18.0',
                 pythonVersion: null,
-                appVersion: '0.14.10',
+                appVersion: '1.0.1768',
                 supportedLatestMcpbManifestVersion: '1.0'
             };
         },

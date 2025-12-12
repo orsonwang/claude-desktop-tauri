@@ -57,7 +57,7 @@ dist/
 
 ### ✅ 已完成功能
 - claude.ai 偵測為 Claude Desktop (`window.isElectron = true`)
-- 版本檢查通過 (0.14.10)
+- 版本檢查通過 (1.0.1768)
 - MCP Server 連線成功（手動設定 + Extension）
 - MCP 工具在 UI 顯示（Connectors Menu）
 - MCP 工具執行成功（tools/call）

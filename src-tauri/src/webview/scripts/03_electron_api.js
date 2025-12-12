@@ -323,7 +323,7 @@ window.__handleExtensionsIpc = async function(method, args) {
                 nodeVersion: '20.18.0',
                 builtInNodeVersion: '20.18.0',
                 pythonVersion: null,
-                appVersion: '0.14.10',
+                appVersion: '1.0.1768',
                 supportedLatestMcpbManifestVersion: '1.0'
             };
 
@@ -505,7 +505,7 @@ window.__handleUpdatesIpc = async function(method, args) {
             return { available: false };
 
         case 'getCurrentVersion':
-            return '0.14.10';
+            return '1.0.1768';
 
         case 'downloadUpdate':
             return { success: false, reason: 'Updates not supported' };
@@ -578,7 +578,7 @@ window.electron = {
 var _claudeAppBindingsImpl = {
     getAppVersion: function() {
         console.log('[claudeAppBindings] getAppVersion called');
-        return '0.14.10';
+        return '1.0.1768';
     },
     registerBinding: function(name, callback) {
         console.log('[claudeAppBindings] registerBinding:', name);

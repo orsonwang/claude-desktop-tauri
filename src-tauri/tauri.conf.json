@@ -18,7 +18,7 @@
         "fullscreen": false,
         "center": true,
         "url": "https://claude.ai",
-        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/0.14.10 Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36",
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.0.1768 Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36",
         "create": false
       }
     ],
