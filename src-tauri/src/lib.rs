@@ -5,10 +5,79 @@ mod webview;
 
 use mcp::McpManager;
 use std::sync::Arc;
-use tauri::webview::{DownloadEvent, NewWindowResponse};
+use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{Manager, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::RwLock;
+
+/// HTTP 代理請求 - 繞過 CSP 限制
+#[tauri::command]
+async fn http_proxy_request(
+    url: String,
+    method: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+
+    let client = reqwest::Client::new();
+
+    let mut header_map = HeaderMap::new();
+    for (key, value) in headers {
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::from_bytes(key.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            header_map.insert(name, val);
+        }
+    }
+
+    let request_builder = match method.to_uppercase().as_str() {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PUT" => client.put(&url),
+        "DELETE" => client.delete(&url),
+        "PATCH" => client.patch(&url),
+        "HEAD" => client.head(&url),
+        _ => client.get(&url),
+    };
+
+    let request_builder = request_builder.headers(header_map);
+    let request_builder = if let Some(body_str) = body {
+        request_builder.body(body_str)
+    } else {
+        request_builder
+    };
+
+    let response = request_builder
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    let status = response.status().as_u16();
+    let status_text = response.status().canonical_reason().unwrap_or("").to_string();
+
+    let mut resp_headers = serde_json::Map::new();
+    for (key, value) in response.headers() {
+        if let Ok(v) = value.to_str() {
+            resp_headers.insert(key.to_string(), serde_json::Value::String(v.to_string()));
+        }
+    }
+
+    let body_bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+    let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+
+    Ok(serde_json::json!({
+        "status": status,
+        "statusText": status_text,
+        "headers": resp_headers,
+        "body": body_str
+    }))
+}
 
 /// Read file content as base64 for drag-drop upload
 #[tauri::command]
@@ -169,6 +238,7 @@ pub fn run() {
             extensions::extension_get_user_config,
             extensions::extension_get_manifest,
             read_file_base64,
+            http_proxy_request,
         ])
         .setup(|app| {
             // 從設定檔取得視窗設定並手動建立視窗
@@ -275,6 +345,23 @@ pub fn run() {
                     false // 阻止 WebView 導航
                 } else {
                     true // 允許 claude.ai 內部導航
+                }
+            });
+
+            // 攔截 HTTP response，移除 CSP header 以允許連接到 a-api.anthropic.com
+            builder = builder.on_page_load(move |webview, payload| {
+                if let PageLoadEvent::Finished = payload.event() {
+                    // 注入 JavaScript 來覆蓋 CSP meta tag（如果有的話）
+                    let _ = webview.eval(r#"
+                        (function() {
+                            // 移除所有 CSP meta tags
+                            var cspMetas = document.querySelectorAll('meta[http-equiv="Content-Security-Policy"]');
+                            cspMetas.forEach(function(meta) {
+                                console.log('[CSP] Removing CSP meta tag');
+                                meta.remove();
+                            });
+                        })();
+                    "#);
                 }
             });
 

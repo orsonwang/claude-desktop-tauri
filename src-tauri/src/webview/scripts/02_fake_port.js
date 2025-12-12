@@ -174,34 +174,43 @@
     // 存儲待處理的 fake port（在 postMessage 之前創建）
     window.__mcpPendingFakePorts = {};
 
+    // displayName -> internalName 映射表
+    window.__mcpDisplayToInternalMap = {};
+
     // 監聽 mcp-server-connected-prepare 訊息，準備假 port
     window.addEventListener('message', function(event) {
         if (event.data && event.data.type === 'mcp-server-connected-prepare') {
-            var serverName = event.data.serverName;
-            console.log('[MCP METHOD 29] Preparing fake port for:', serverName);
+            var internalName = event.data.serverName;  // 這是 internalName
+            var displayName = event.data.displayName || internalName;  // displayName 用於 UI
+            console.log('[MCP METHOD 29] Preparing fake port for:', internalName, '(display:', displayName, ')');
 
-            var fakePort = createFakeMessagePort(serverName);
-            window.__mcpFakePorts[serverName] = fakePort;
-            window.__mcpPendingFakePorts[serverName] = fakePort;
+            // 建立映射：displayName -> internalName
+            window.__mcpDisplayToInternalMap[displayName] = internalName;
+
+            // 用 internalName 作為 key 創建假 port（因為 MCP 通訊需要 internalName）
+            var fakePort = createFakeMessagePort(internalName);
+            window.__mcpFakePorts[internalName] = fakePort;
+            window.__mcpPendingFakePorts[displayName] = fakePort;  // 用 displayName 作為 pending key（因為 mcp-server-connected 會用 displayName）
 
             // 也保存到 __mcpPortHandlers 保持兼容
-            window.__mcpPortHandlers[serverName] = {
+            window.__mcpPortHandlers[internalName] = {
                 port: fakePort,
                 handler: null,
                 listeners: []
             };
 
-            console.log('[MCP METHOD 29] Fake port prepared for:', serverName);
+            console.log('[MCP METHOD 29] Fake port prepared for:', internalName, '(pending key:', displayName, ')');
         }
     });
 
     // 攔截 mcp-server-connected 訊息，替換 event.ports
     window.addEventListener('message', function(event) {
         if (event.data && event.data.type === 'mcp-server-connected') {
-            var serverName = event.data.serverName;
-            var pendingFakePort = window.__mcpPendingFakePorts[serverName];
+            var displayName = event.data.serverName;  // 現在這是 displayName（用於 UI）
+            var internalName = event.data.internalName || displayName;  // internalName 用於 MCP 通訊
+            var pendingFakePort = window.__mcpPendingFakePorts[displayName];
 
-            console.log('[MCP METHOD 29] Intercepted mcp-server-connected for:', serverName);
+            console.log('[MCP METHOD 29] Intercepted mcp-server-connected for:', displayName, '(internal:', internalName, ')');
             console.log('[MCP METHOD 29] Has pending fake port:', !!pendingFakePort);
             console.log('[MCP METHOD 29] Original ports length:', event.ports ? event.ports.length : 0);
 
@@ -213,14 +222,14 @@
                         writable: false,
                         configurable: true
                     });
-                    console.log('[MCP METHOD 29] Successfully hijacked event.ports for:', serverName);
+                    console.log('[MCP METHOD 29] Successfully hijacked event.ports for:', displayName);
                     console.log('[MCP METHOD 29] New ports[0] is fake port:', event.ports[0].__isFakePort);
                 } catch (err) {
                     console.error('[MCP METHOD 29] Failed to hijack event.ports:', err);
                 }
 
-                // 清除 pending
-                delete window.__mcpPendingFakePorts[serverName];
+                // 清除 pending（用 displayName 作為 key）
+                delete window.__mcpPendingFakePorts[displayName];
             }
         }
     }, true);  // capture 模式，在 claude.ai 的 handler 之前執行

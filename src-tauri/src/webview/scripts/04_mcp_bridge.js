@@ -81,12 +81,22 @@ window.__handleMcpJsonRpc = async function(serverName, request) {
     // 直接處理每個請求，不使用快取
     // claude.ai 前端可能需要每個請求都得到新的回應
 
+    // === 關鍵修復：serverName 可能是 internalName，需要轉換為 displayName 來查詢 cache ===
+    // 因為 __mcpServersCache 的 key 是 displayName
+    var displayName = serverName;
+    if (window.__mcpReverseNameMapping && window.__mcpReverseNameMapping[serverName]) {
+        displayName = window.__mcpReverseNameMapping[serverName];
+    }
+    console.log('[MCP JSON-RPC] serverName:', serverName, 'displayName:', displayName);
+
     try {
         var response;
         switch (method) {
             case 'initialize':
                 // 使用客戶端請求的 protocolVersion，或回退到已知版本
                 var clientVersion = params.protocolVersion || '2024-11-05';
+                // displayName 已在上方計算
+                var displayNameForInit = displayName;
                 response = {
                     jsonrpc: '2.0',
                     id: id,
@@ -99,18 +109,20 @@ window.__handleMcpJsonRpc = async function(serverName, request) {
                             logging: {}
                         },
                         serverInfo: {
-                            name: serverName,
+                            name: displayNameForInit,  // 使用 displayName 而不是 internalName
                             version: '1.0.0'
                         }
                     }
                 };
-                console.log('[MCP JSON-RPC] initialize response:', JSON.stringify(response));
+                console.log('[MCP JSON-RPC] initialize response:', JSON.stringify(response), 'displayName:', displayNameForInit);
                 return response;
 
             case 'tools/list':
                 var servers = window.__mcpServersCache || {};
-                var serverData = servers[serverName];
+                // 使用 displayName 查詢 cache（因為 cache 的 key 是 displayName）
+                var serverData = servers[displayName];
                 var tools = serverData ? serverData.tools : [];
+                console.log('[MCP JSON-RPC] tools/list for:', displayName, 'found:', !!serverData, 'tools count:', tools.length);
                 return {
                     jsonrpc: '2.0',
                     id: id,
@@ -157,8 +169,10 @@ window.__handleMcpJsonRpc = async function(serverName, request) {
 
             case 'resources/list':
                 var servers = window.__mcpServersCache || {};
-                var serverData = servers[serverName];
+                // 使用 displayName 查詢 cache（因為 cache 的 key 是 displayName）
+                var serverData = servers[displayName];
                 var resources = serverData ? serverData.resources : [];
+                console.log('[MCP JSON-RPC] resources/list for:', displayName, 'found:', !!serverData, 'resources count:', resources.length);
                 return {
                     jsonrpc: '2.0',
                     id: id,
@@ -965,8 +979,12 @@ window.__mcpServersLoaded = false;
 
         for (var idx = 0; idx < servers.length; idx++) {
             var server = servers[idx];
+            // 使用 display_name 作為顯示名稱（如 "Filesystem"），server.name 是內部 ID
+            var displayName = server.display_name || server.name;
+            var internalName = server.name;  // 內部 ID，用於 MCP 通訊
             var serverData = {
-                name: server.name,
+                name: displayName,  // claude.ai UI 顯示這個
+                internalName: internalName,  // 用於 MCP 通訊
                 status: 'connected',
                 error: null,
                 tools: server.tools.map(function(t) {
@@ -984,12 +1002,23 @@ window.__mcpServersLoaded = false;
                 resourceTemplates: [],
                 prompts: [],
                 serverInfo: {
-                    name: server.name,
+                    name: displayName,
                     version: '1.0.0'
                 }
             };
             resultArray.push(serverData);
-            resultObj[server.name] = serverData;
+            // 只用 displayName 作為 key（claude.ai UI 顯示用）
+            resultObj[displayName] = serverData;
+        }
+
+        // 另外建立名稱映射表，用於 connectToMcpServer 和 displayName 查詢
+        window.__mcpNameMapping = {};
+        window.__mcpReverseNameMapping = {};  // internalName -> displayName
+        for (var idx2 = 0; idx2 < resultArray.length; idx2++) {
+            var s = resultArray[idx2];
+            window.__mcpNameMapping[s.name] = s.internalName;  // displayName -> internalName
+            window.__mcpNameMapping[s.internalName] = s.internalName;  // internalName -> internalName
+            window.__mcpReverseNameMapping[s.internalName] = s.name;  // internalName -> displayName
         }
 
         window.__mcpServersArray = resultArray;

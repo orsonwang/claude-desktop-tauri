@@ -186,9 +186,22 @@ window.__handleMcpIpc = async function(method, args) {
             return true;
 
         case 'getMcpServersConfig':
-            if (window.__TAURI__) {
-                var config = await window.__TAURI__.core.invoke('mcp_get_config');
-                return config.mcpServers || config.mcp_servers || {};
+            // 返回以 displayName 為 key 的設定，這樣 UI 會顯示正確的名稱
+            if (window.claudeAppBindings) {
+                var serversArray = await window.claudeAppBindings.listMcpServers();
+                var configObj = {};
+                for (var i = 0; i < serversArray.length; i++) {
+                    var srv = serversArray[i];
+                    // 用 displayName（srv.name）作為 key
+                    configObj[srv.name] = {
+                        command: 'mcp-server',
+                        args: [],
+                        // 保留 internalName 以便後續使用
+                        _internalName: srv.internalName
+                    };
+                }
+                console.log('[IPC:MCP] getMcpServersConfig returning:', Object.keys(configObj));
+                return configObj;
             }
             return {};
 
@@ -197,12 +210,14 @@ window.__handleMcpIpc = async function(method, args) {
             if (window.claudeAppBindings) {
                 var serversArray = await window.claudeAppBindings.listMcpServers();
                 // 轉換 Array 為 Object（以 server name 為 key）
+                // 注意：key 應該是 displayName，因為 claude.ai UI 顯示的是 Object keys
                 var serversObj = {};
                 for (var i = 0; i < serversArray.length; i++) {
                     var srv = serversArray[i];
+                    console.log('[IPC:MCP] getMcpServersConfigWithStatus srv:', srv.name, 'internalName:', srv.internalName);
                     serversObj[srv.name] = srv;
                 }
-                console.log('[IPC:MCP] getMcpServersConfigWithStatus returning Object:', Object.keys(serversObj));
+                console.log('[IPC:MCP] getMcpServersConfigWithStatus returning Object keys:', Object.keys(serversObj));
                 return serversObj;
             }
             return {};
@@ -277,6 +292,28 @@ window.__handleExtensionsIpc = async function(method, args) {
             return true;
 
         case 'getInstalledExtensionsWithState':
+            // 返回已安裝的 Extensions，包含 display name
+            if (window.__TAURI__) {
+                try {
+                    var extensions = await window.__TAURI__.core.invoke('extension_list');
+                    return extensions.map(function(ext) {
+                        return {
+                            id: ext.id,
+                            name: ext.manifest.display_name || ext.manifest.name,
+                            displayName: ext.manifest.display_name || ext.manifest.name,
+                            version: ext.manifest.version,
+                            description: ext.manifest.description || '',
+                            enabled: ext.enabled,
+                            state: ext.enabled ? 'enabled' : 'disabled',
+                            manifest: ext.manifest,
+                            path: ext.path
+                        };
+                    });
+                } catch (e) {
+                    console.error('[IPC:Extensions] getInstalledExtensionsWithState error:', e);
+                    return [];
+                }
+            }
             return [];
 
         case 'getCompatibilityCheckResult':
@@ -578,8 +615,12 @@ var _claudeAppBindingsImpl = {
 
             for (var j = 0; j < servers.length; j++) {
                 var server = servers[j];
+                // 使用 display_name 作為顯示名稱（如 "Filesystem"），server.name 是內部 ID（如 "ext_ant.dir..."）
+                var displayName = server.display_name || server.name;
+                var internalName = server.name;  // 內部 ID，用於 MCP 通訊
                 var serverData = {
-                    name: server.name,
+                    name: displayName,  // claude.ai UI 顯示這個
+                    internalName: internalName,  // 用於 MCP 通訊
                     status: 'connected',
                     error: null,
                     tools: server.tools.map(function(t) {
@@ -597,12 +638,23 @@ var _claudeAppBindingsImpl = {
                     resourceTemplates: [],
                     prompts: [],
                     serverInfo: {
-                        name: server.name,
+                        name: displayName,
                         version: '1.0.0'
                     }
                 };
                 result.push(serverData);
-                cacheObj[server.name] = serverData;
+                // 只用 displayName 作為 key（claude.ai UI 顯示用）
+                cacheObj[displayName] = serverData;
+            }
+
+            // 另外建立名稱映射表
+            window.__mcpNameMapping = window.__mcpNameMapping || {};
+            window.__mcpReverseNameMapping = window.__mcpReverseNameMapping || {};  // internalName -> displayName
+            for (var k = 0; k < result.length; k++) {
+                var s = result[k];
+                window.__mcpNameMapping[s.name] = s.internalName;  // displayName -> internalName
+                window.__mcpNameMapping[s.internalName] = s.internalName;  // internalName -> internalName
+                window.__mcpReverseNameMapping[s.internalName] = s.name;  // internalName -> displayName
             }
 
             window.__mcpServersArray = result;
@@ -642,6 +694,22 @@ var _claudeAppBindingsImpl = {
         }
 
         console.log('[claudeAppBindings] connectToMcpServer CALLED:', serverName);
+
+        // === 保留原始 displayName，用於 UI 顯示 ===
+        var displayName = serverName;
+
+        // === 名稱映射：displayName -> internalName ===
+        // claude.ai 傳入的可能是 displayName（如 "Filesystem"），需要轉換為 internalName（如 "ext_ant.dir..."）
+        var nameMapping = window.__mcpNameMapping || {};
+        var internalName = serverName;  // 預設等於 serverName
+        if (nameMapping[serverName]) {
+            internalName = nameMapping[serverName];
+            if (internalName !== serverName) {
+                console.log('[claudeAppBindings] Mapping displayName to internalName:', serverName, '->', internalName);
+            }
+        }
+        // serverName 現在指向 internalName（用於 Tauri 後端通訊）
+        serverName = internalName;
 
         // === 檢查是否已有現有連線，避免重複建立 ===
         if (!window.__mcpActiveConnections) {
@@ -765,6 +833,8 @@ var _claudeAppBindingsImpl = {
                         }
 
                         var clientVersion = (data.params && data.params.protocolVersion) || '2024-11-05';
+                        // 注意：serverInfo.name 必須使用 displayName（如 "Filesystem"），不是 internalName
+                        // claude.ai UI 會直接顯示這個名稱
                         var initResponse = {
                             jsonrpc: '2.0',
                             id: data.id,
@@ -777,12 +847,12 @@ var _claudeAppBindingsImpl = {
                                     logging: {}
                                 },
                                 serverInfo: {
-                                    name: serverName,
+                                    name: displayName,  // 使用 displayName 而不是 serverName（internalName）
                                     version: '1.0.0'
                                 }
                             }
                         };
-                        console.log('[MCP ServerPort #' + connectionId + '] initialize: immediate sync response for id:', data.id);
+                        console.log('[MCP ServerPort #' + connectionId + '] initialize: immediate sync response for id:', data.id, 'displayName:', displayName);
                         serverPort.postMessage(initResponse);
                         initializeHandled = true;
                         initializeResponse = initResponse;
@@ -889,30 +959,35 @@ var _claudeAppBindingsImpl = {
                 // === 方法 29：使用假 MessagePort 繞過 WebKitGTK 問題 ===
                 // 先發送 prepare 訊息創建假 port，然後發送 connected 訊息
                 // 我們的 capture listener 會劫持 event.ports，替換成假 port
-                console.log('[MCP METHOD 29] Starting fake port flow for', serverName);
+                // 關鍵：使用 internalName 作為內部 key，但 mcp-server-connected 傳送 displayName
+                console.log('[MCP METHOD 29] Starting fake port flow for', serverName, '(display:', displayName, ')');
                 console.log('[claudeAppBindings] connectToMcpServer: clientPort ready:', !!clientPort, 'serverPort ready:', !!serverPort);
 
                 // 步驟 1：發送 prepare 訊息，創建假 port
+                // 注意：用 internalName 作為 key（因為 MCP 通訊需要 internalName）
                 window.postMessage({
                     type: 'mcp-server-connected-prepare',
-                    serverName: serverName
+                    serverName: serverName,  // internalName - 用於內部 key
+                    displayName: displayName  // displayName - 用於 UI 顯示
                 }, '*');
                 console.log('[MCP METHOD 29] Sent prepare message for', serverName);
 
                 // 給一個微小的延遲確保 prepare 訊息被處理
                 // 使用 setTimeout(0) 確保事件循環處理了 prepare 訊息
                 setTimeout(function() {
-                    console.log('[MCP METHOD 29] Sending mcp-server-connected for', serverName);
+                    console.log('[MCP METHOD 29] Sending mcp-server-connected for', displayName, '(internal:', serverName, ')');
 
                     // 步驟 2：發送 connected 訊息（帶著真正的 port）
                     // 我們的 capture listener 會攔截並替換 event.ports
+                    // 關鍵修改：serverName 傳送 displayName，這樣 claude.ai UI 會顯示正確名稱
                     window.postMessage({
                         type: 'mcp-server-connected',
-                        serverName: serverName,
+                        serverName: displayName,  // 傳送 displayName 給 claude.ai UI
+                        internalName: serverName,  // 保留 internalName 供內部使用
                         uuid: uuid
                     }, '*', [clientPort]);
 
-                    console.log('[claudeAppBindings] connectToMcpServer #' + connectionId + ': message posted for', serverName, 'uuid:', uuid);
+                    console.log('[claudeAppBindings] connectToMcpServer #' + connectionId + ': message posted for', displayName, 'uuid:', uuid);
                 }, 0);
 
                 // 方法 29：假 port 系統會處理所有通訊

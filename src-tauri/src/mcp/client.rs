@@ -33,6 +33,7 @@ pub struct McpResource {
 pub struct McpClient {
     #[allow(dead_code)]
     name: String,
+    pub display_name: String,
     process: Child,
     stdin: Arc<Mutex<std::process::ChildStdin>>,
     pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>,
@@ -42,7 +43,7 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    pub fn spawn(name: &str, config: &McpServerConfig) -> Result<Self, String> {
+    pub fn spawn(name: &str, display_name: &str, config: &McpServerConfig) -> Result<Self, String> {
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args)
             .envs(&config.env)
@@ -180,6 +181,7 @@ impl McpClient {
 
         Ok(Self {
             name: name.to_string(),
+            display_name: display_name.to_string(),
             process,
             stdin: Arc::new(Mutex::new(stdin)),
             pending_requests,

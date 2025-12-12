@@ -12,6 +12,7 @@ use crate::extensions;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub name: String,
+    pub display_name: String,
     pub tools: Vec<super::client::McpTool>,
     pub resources: Vec<super::client::McpResource>,
 }
@@ -65,7 +66,8 @@ impl McpManager {
                 continue;
             }
 
-            match McpClient::spawn(&name, &server_config) {
+            // 使用 name 作為 display_name（手動設定的 server 沒有獨立的 display_name）
+            match McpClient::spawn(&name, &name, &server_config) {
                 Ok(mut client) => {
                     if let Err(e) = client.initialize().await {
                         eprintln!("Failed to initialize MCP server '{}': {}", name, e);
@@ -107,7 +109,8 @@ impl McpManager {
                         server_name, ext_server.name, server_config.command, server_config.args
                     );
 
-                    match McpClient::spawn(&server_name, &server_config) {
+                    // ext_server.name 是 display_name（如 "Filesystem"）
+                    match McpClient::spawn(&server_name, &ext_server.name, &server_config) {
                         Ok(mut client) => {
                             if let Err(e) = client.initialize().await {
                                 eprintln!("[MCP] Failed to initialize '{}': {}", server_name, e);
@@ -136,14 +139,19 @@ impl McpManager {
 
     pub async fn list_servers(&self) -> Vec<ServerInfo> {
         let clients = self.clients.read().await;
-        clients
+        let servers: Vec<ServerInfo> = clients
             .iter()
-            .map(|(name, client)| ServerInfo {
-                name: name.clone(),
-                tools: client.tools.clone(),
-                resources: client.resources.clone(),
+            .map(|(name, client)| {
+                eprintln!("[MCP] list_servers: name={}, display_name={}", name, client.display_name);
+                ServerInfo {
+                    name: name.clone(),
+                    display_name: client.display_name.clone(),
+                    tools: client.tools.clone(),
+                    resources: client.resources.clone(),
+                }
             })
-            .collect()
+            .collect();
+        servers
     }
 
     pub async fn call_tool(

@@ -53,7 +53,7 @@ dist/
 
 ---
 
-## 功能狀態（2025-11-26）
+## 功能狀態（2025-12-12 更新）
 
 ### ✅ 已完成功能
 - claude.ai 偵測為 Claude Desktop (`window.isElectron = true`)
@@ -65,6 +65,10 @@ dist/
 - Extension Runtime（自動啟動 Extension MCP Server）
 - `${user_config.*}` 佔位符解析
 - MCP 連線重用機制（減少 timeout 錯誤）
+- MCP Server 名稱顯示修正（displayName vs internalName）
+- CSP 遙測請求靜默阻擋（`a-api.anthropic.com`）
+- MCP 連線錯誤 toast 自動隱藏
+- 定時 MCP 測試腳本（除錯用）
 
 ---
 
@@ -205,7 +209,44 @@ window.postMessage({
 2. 劫持 `event.ports`，讓 claude.ai 收到我們的假 port
 3. 雙向通訊完全由 JavaScript 控制
 
-**程式碼位置**：`desktop_api.rs` 第 48-378 行
+**程式碼位置**：`src/webview/scripts/02_fake_port.js`
+
+---
+
+## 🧪 定時 MCP 測試（2025-12-12）
+
+用於除錯 MCP 連線穩定性的自動測試腳本。
+
+### 功能
+- 每 30 秒輪流呼叫 `read_file` 和 `list_directory`
+- 測試路徑：`/tmp/read.txt` 和 `/tmp`
+- 自動尋找 Filesystem MCP server
+
+### 控制方式
+```javascript
+// 在 DevTools Console 執行
+window.__mcpTestEnabled = false;  // 關閉測試
+window.__mcpTestEnabled = true;   // 重新啟用
+```
+
+### 日誌輸出
+```
+[MCP Test] ======================================
+[MCP Test] Test #1 - 2025-12-12T12:00:00.000Z
+[MCP Test] Server: ext_ant.dir.ant.anthropic.filesystem
+[MCP Test] Tool: read_file
+[MCP Test] Args: {"path":"/tmp/read.txt"}
+[MCP Test] SUCCESS in 150 ms
+[MCP Test] Result: {"content":[{"type":"text","text":"test\n"}]}
+[MCP Test] ======================================
+```
+
+### 測試前準備
+```bash
+echo "test content" > /tmp/read.txt
+```
+
+**程式碼位置**：`src/webview/scripts/01_polyfills.js` 第 227-331 行
 
 ---
 
